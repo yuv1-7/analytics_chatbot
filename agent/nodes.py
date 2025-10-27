@@ -4,12 +4,16 @@ from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
 from pydantic import BaseModel, Field
 from typing import Optional, List, Dict, Any
 from agent.state import AgentState
+from agent.tools import ALL_TOOLS
 
 llm = ChatGoogleGenerativeAI(
     model="gemini-2.5-flash",
     api_key=os.getenv("gemini_api_key"),
     temperature=0.7
 )
+
+# Bind tools to LLM for data retrieval
+llm_with_tools = llm.bind_tools(ALL_TOOLS)
 
 
 class ParsedIntent(BaseModel):
@@ -107,6 +111,47 @@ Examples:
         "needs_clarification": result.needs_clarification,
         "clarification_question": result.clarification_question,
         "execution_path": execution_path
+    }
+
+def data_retrieval_agent(state: AgentState) -> dict:
+    """Agent that decides which tools to call and retrieves data"""
+    
+    execution_path = state.get('execution_path', [])
+    execution_path.append('data_retrieval')
+    
+    # Build context for tool selection
+    context = f"""Based on the parsed query intent, determine which tools to call to retrieve the necessary data.
+
+Parsed Intent:
+- Use Case: {state.get('use_case')}
+- Models Requested: {state.get('models_requested')}
+- Comparison Type: {state.get('comparison_type')}
+- Metrics: {state.get('metrics_requested')}
+- Time Range: {state.get('time_range')}
+
+Available tools:
+1. get_ensemble_vs_base_performance - Compare ensemble vs base models
+2. get_model_performance_summary - Get performance metrics for models
+3. get_drift_detection_summary - Check for model drift
+4. compare_model_versions - Compare two versions of a model
+5. get_feature_importance_analysis - Get feature importance rankings
+6. get_prediction_analysis - Get prediction results
+7. search_models - Search for models by name/description
+
+Call the appropriate tool(s) to retrieve the data needed to answer the user's question."""
+
+    messages = [
+        SystemMessage(content=context),
+        HumanMessage(content=state['user_query'])
+    ]
+    
+    # Get tool calls from LLM
+    response = llm_with_tools.invoke(messages)
+    
+    return {
+        "messages": [response],
+        "execution_path": execution_path,
+        "next_action": "generate_response"
     }
 
 def orchestrator_agent(state: AgentState) -> dict:

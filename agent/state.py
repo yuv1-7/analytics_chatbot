@@ -7,6 +7,7 @@ class AgentState(TypedDict):
     messages: Annotated[list[BaseMessage], add_messages]
     user_query: str
     
+    # Query Understanding outputs
     parsed_intent: Optional[Dict[str, Any]]
     use_case: Optional[str]
     models_requested: Optional[List[str]]
@@ -15,6 +16,11 @@ class AgentState(TypedDict):
     metrics_requested: Optional[List[str]]
     entities_requested: Optional[List[str]]
     
+    # Data retrieval outputs
+    retrieved_data: Optional[Dict[str, Any]]
+    tool_calls: Optional[List[Dict[str, Any]]]
+    
+    # Control flow
     needs_clarification: bool
     clarification_question: Optional[str]
     loop_count: int
