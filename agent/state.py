@@ -4,6 +4,7 @@ from langgraph.graph.message import add_messages
 from langchain_core.messages import BaseMessage
 
 class AgentState(TypedDict):
+    # Messages
     messages: Annotated[list[BaseMessage], add_messages]
     user_query: str
     
@@ -15,10 +16,24 @@ class AgentState(TypedDict):
     time_range: Optional[Dict[str, Any]]
     metrics_requested: Optional[List[str]]
     entities_requested: Optional[List[str]]
+    requires_visualization: bool
+    
+    # Context retrieval outputs
+    context_documents: Optional[List[Dict[str, Any]]]
     
     # Data retrieval outputs
     retrieved_data: Optional[Dict[str, Any]]
     tool_calls: Optional[List[Dict[str, Any]]]
+    
+    # Analysis outputs
+    analysis_results: Optional[Dict[str, Any]]
+    
+    # Visualization outputs
+    visualization_specs: Optional[List[Dict[str, Any]]]
+    rendered_charts: Optional[List[Dict[str, Any]]]
+    
+    # Insight generation outputs
+    final_insights: Optional[str]
     
     # Control flow
     needs_clarification: bool

@@ -6,7 +6,9 @@ from langchain_core.messages import AIMessage, ToolMessage
 
 load_dotenv()
 
+
 def print_state_info(state):
+    """Print parsed query information and execution path"""
     print("\n" + "="*80)
     print("PARSED QUERY INFORMATION")
     print("="*80)
@@ -29,13 +31,18 @@ def print_state_info(state):
     if state.get('entities_requested'):
         print(f"Entities: {', '.join(state['entities_requested'])}")
     
+    if state.get('requires_visualization'):
+        print(f"Visualization Required: Yes")
+    
     if state.get('execution_path'):
         print(f"Path: {' → '.join(state['execution_path'])}")
     
     print(f"Next: {state.get('next_action', 'N/A')}")
     print("="*80 + "\n")
 
+
 def print_tool_results(messages):
+    """Print data retrieved from tools"""
     tool_messages = [msg for msg in messages if isinstance(msg, ToolMessage)]
     
     if not tool_messages:
@@ -99,11 +106,95 @@ def print_tool_results(messages):
     
     print("="*80 + "\n")
 
+
+def print_analysis_results(state):
+    """Print analysis and computation results"""
+    analysis_results = state.get('analysis_results')
+    
+    if not analysis_results:
+        return
+    
+    print("\n" + "="*80)
+    print("ANALYSIS RESULTS")
+    print("="*80)
+    
+    computed_metrics = analysis_results.get('computed_metrics', {})
+    if computed_metrics:
+        print("\nComputed Metrics:")
+        for metric_name, values in computed_metrics.items():
+            print(f"  {metric_name}:")
+            for key, val in values.items():
+                if isinstance(val, float):
+                    print(f"    {key}: {val:.4f}")
+                else:
+                    print(f"    {key}: {val}")
+    
+    trends = analysis_results.get('trends', [])
+    if trends:
+        print(f"\nTrends Identified: {len(trends)}")
+        for trend in trends[:3]:
+            print(f"  - {trend}")
+    
+    anomalies = analysis_results.get('anomalies', [])
+    if anomalies:
+        print(f"\nAnomalies Detected: {len(anomalies)}")
+        for anomaly in anomalies[:3]:
+            print(f"  - {anomaly}")
+    
+    print("="*80 + "\n")
+
+
+def display_visualizations(state):
+    """Display rendered charts"""
+    rendered_charts = state.get('rendered_charts', [])
+    
+    if not rendered_charts:
+        return
+    
+    print("\n" + "="*80)
+    print("VISUALIZATIONS")
+    print("="*80)
+    
+    for i, chart_data in enumerate(rendered_charts, 1):
+        title = chart_data.get('title', f'Chart {i}')
+        chart_type = chart_data.get('type', 'unknown')
+        figure = chart_data.get('figure')
+        
+        print(f"\n{i}. {title} ({chart_type})")
+        
+        if figure:
+            try:
+                # Display the chart
+                figure.show()
+                print(f"   ✓ Chart displayed successfully")
+            except Exception as e:
+                print(f"   ✗ Failed to display: {e}")
+        else:
+            print(f"   ✗ No figure data available")
+    
+    print("\n" + "="*80 + "\n")
+
+
+def print_final_insights(state):
+    """Print the final narrative insights"""
+    insights = state.get('final_insights')
+    
+    if not insights:
+        return
+    
+    print("\n" + "="*80)
+    print("INSIGHTS & RECOMMENDATIONS")
+    print("="*80)
+    print(f"\n{insights}\n")
+    print("="*80 + "\n")
+
+
 def main():
     print("="*80)
     print("PHARMA MODEL RESULTS INTERPRETER")
     print("="*80)
-    print("\nType 'quit' to exit\n")
+    print("\nType 'quit' to exit")
+    print("Type 'help' for example queries\n")
     
     conversation_state = {
         "messages": [],
@@ -115,8 +206,14 @@ def main():
         "time_range": None,
         "metrics_requested": None,
         "entities_requested": None,
+        "requires_visualization": False,
+        "context_documents": None,
         "retrieved_data": None,
         "tool_calls": None,
+        "analysis_results": None,
+        "visualization_specs": None,
+        "rendered_charts": None,
+        "final_insights": None,
         "needs_clarification": False,
         "clarification_question": None,
         "loop_count": 0,
@@ -134,18 +231,37 @@ def main():
             print("\nGoodbye!\n")
             break
         
+        if user_input.lower() == 'help':
+            print("\nExample Queries:")
+            print("  - Compare Random Forest vs XGBoost for NRx forecasting")
+            print("  - Show me ensemble vs base model performance")
+            print("  - What are the top features for the NRx model?")
+            print("  - Has the model drifted recently?")
+            print("  - Display prediction trends over time")
+            print("  - Compare version 1.0 to version 2.0 of the HCP model\n")
+            continue
+        
+        # Reset state for new query
         conversation_state["user_query"] = user_input
         conversation_state["execution_path"] = []
         conversation_state["next_action"] = None
+        conversation_state["requires_visualization"] = False
+        conversation_state["analysis_results"] = None
+        conversation_state["rendered_charts"] = None
+        conversation_state["final_insights"] = None
         
-        print("\nAgent: ", end="", flush=True)
+        print("\n" + "="*80)
+        print("PROCESSING QUERY")
+        print("="*80 + "\n")
         
         try:
             final_state = None
             all_messages = []
             
+            # Stream through the graph
             for event in graph.stream(conversation_state):
                 for node_name, value in event.items():
+                    print(f"→ Executing: {node_name}")
                     if 'messages' in value:
                         all_messages.extend(value['messages'])
                     final_state = value
@@ -154,26 +270,48 @@ def main():
                 conversation_state.update(final_state)
                 all_messages = final_state.get('messages', [])
                 
+                # Print clarification messages if any
                 agent_messages = [msg for msg in all_messages if isinstance(msg, AIMessage)]
                 for msg in agent_messages:
                     if msg.content and not msg.tool_calls:
-                        print(msg.content)
+                        if final_state.get('needs_clarification'):
+                            print("\nAgent: " + msg.content)
                 
-                tool_messages = [msg for msg in all_messages if isinstance(msg, ToolMessage)]
-                if tool_messages:
-                    print_tool_results(all_messages)
+                # Only print detailed results if not asking for clarification
+                if not final_state.get('needs_clarification'):
+                    # Print tool results
+                    tool_messages = [msg for msg in all_messages if isinstance(msg, ToolMessage)]
+                    if tool_messages:
+                        print_tool_results(all_messages)
+                    
+                    # Print analysis results
+                    print_analysis_results(final_state)
+                    
+                    # Display visualizations
+                    display_visualizations(final_state)
+                    
+                    # Print final insights
+                    print_final_insights(final_state)
                 
+                # Print state info
                 print_state_info(final_state)
+                
+                # Update loop count for conversation continuity
                 conversation_state["loop_count"] = final_state.get("loop_count", 0)
         
         except Exception as e:
-            print(f"\nError: {str(e)}")
+            print(f"\n{'='*80}")
+            print("ERROR")
+            print("="*80)
+            print(f"Error: {str(e)}")
             print(f"Type: {type(e).__name__}")
             import traceback
             traceback.print_exc()
-            print("\nTry again.\n")
+            print(f"\n{'='*80}\n")
+            print("Try rephrasing your query or type 'help' for examples.\n")
         
         print()
+
 
 if __name__ == "__main__":
     main()

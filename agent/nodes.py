@@ -1,10 +1,14 @@
 import os
+import json
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
 from pydantic import BaseModel, Field
 from typing import Optional, List, Dict, Any
 from agent.state import AgentState
 from agent.tools import ALL_TOOLS
+import plotly.express as px
+import plotly.graph_objects as go
+import pandas as pd
 
 llm = ChatGoogleGenerativeAI(
     model="gemini-2.5-flash",
@@ -48,8 +52,20 @@ class ParsedIntent(BaseModel):
         default=None,
         description="Question to ask user for clarification"
     )
+    requires_visualization: bool = Field(
+        default=False,
+        description="True if query implies need for charts/graphs"
+    )
+
+
+class VisualizationSpec(BaseModel):
+    visualizations: List[Dict[str, Any]] = Field(
+        description="List of visualization specifications"
+    )
+
 
 def query_understanding_agent(state: AgentState) -> dict:
+    """Parse user query to extract structured intent"""
     query = state['user_query']
     messages = state.get('messages', [])
     
@@ -78,13 +94,20 @@ METRICS:
 - Classification: Accuracy, Precision, Recall, F1, AUC-ROC
 - Pharma-specific: TRx (total prescriptions), NRx (new prescriptions)
 
+VISUALIZATION TRIGGERS:
+Set requires_visualization=True if query contains:
+- "show", "plot", "chart", "graph", "visualize", "display"
+- Comparison of metrics/models
+- Trends over time
+- Distribution analysis
+
 Extract all relevant information. If query is ambiguous or missing critical info, set needs_clarification=True and provide a clarification_question.
-Save info as you go. Dont ask for info already provided by the user.
+Save info as you go. Don't ask for info already provided by the user.
 
 Examples:
-- "Compare Random Forest vs XGBoost for NRx forecasting last month" → use_case=NRx_forecasting, models_requested=['Random Forest', 'XGBoost'], time_range={'period': 'last_month'}
+- "Compare Random Forest vs XGBoost for NRx forecasting last month" → use_case=NRx_forecasting, models_requested=['Random Forest', 'XGBoost'], time_range={'period': 'last_month'}, requires_visualization=True
 - "Why did the ensemble perform worse?" → comparison_type=ensemble_vs_base, needs_clarification=True (which use case? which ensemble?)
-- "Show me drift detection results" → use_case=model_drift_detection"""
+- "Show me drift detection results" → use_case=model_drift_detection, requires_visualization=True"""
     
     structured_llm = llm.with_structured_output(ParsedIntent)
     
@@ -97,7 +120,6 @@ Examples:
     
     execution_path = state.get('execution_path', [])
     execution_path.append('query_understanding')
-    print(result)
     
     return {
         "messages": [HumanMessage(content=query)],
@@ -110,8 +132,40 @@ Examples:
         "entities_requested": result.entities_requested,
         "needs_clarification": result.needs_clarification,
         "clarification_question": result.clarification_question,
+        "requires_visualization": result.requires_visualization,
         "execution_path": execution_path
     }
+
+
+def context_retrieval_agent(state: AgentState) -> dict:
+    """Retrieve relevant context from vector DB (stub for now)"""
+    execution_path = state.get('execution_path', [])
+    execution_path.append('context_retrieval')
+    
+    # TODO: Implement ChromaDB retrieval
+    # For now, return placeholder context
+    context_docs = []
+    
+    use_case = state.get('use_case')
+    models = state.get('models_requested', [])
+    
+    if use_case:
+        context_docs.append({
+            'type': 'use_case_context',
+            'content': f'Context for {use_case}'
+        })
+    
+    if models:
+        context_docs.append({
+            'type': 'model_context',
+            'content': f'Information about {", ".join(models)}'
+        })
+    
+    return {
+        "context_documents": context_docs,
+        "execution_path": execution_path
+    }
+
 
 def data_retrieval_agent(state: AgentState) -> dict:
     """Agent that decides which tools to call and retrieves data"""
@@ -151,10 +205,262 @@ Call the appropriate tool(s) to retrieve the data needed to answer the user's qu
     return {
         "messages": [response],
         "execution_path": execution_path,
-        "next_action": "generate_response"
+        "next_action": "analyze" if state.get('requires_visualization') else "generate_insights"
     }
 
+
+def analysis_computation_agent(state: AgentState) -> dict:
+    """Perform calculations and analysis on retrieved data"""
+    execution_path = state.get('execution_path', [])
+    execution_path.append('analysis_computation')
+    
+    # Extract data from tool messages
+    messages = state.get('messages', [])
+    tool_results = []
+    
+    from langchain_core.messages import ToolMessage
+    for msg in messages:
+        if isinstance(msg, ToolMessage):
+            try:
+                result = json.loads(msg.content) if isinstance(msg.content, str) else msg.content
+                tool_results.append(result)
+            except:
+                continue
+    
+    # Perform analysis based on comparison type
+    analysis_results = {
+        'raw_data': tool_results,
+        'computed_metrics': {},
+        'trends': [],
+        'anomalies': []
+    }
+    
+    comparison_type = state.get('comparison_type')
+    
+    # Example: Compute percentage improvements for ensemble comparisons
+    if comparison_type == 'ensemble_vs_base':
+        for result in tool_results:
+            if 'comparison' in result:
+                for metric, values in result['comparison'].items():
+                    if isinstance(values, dict) and 'improvement_vs_average' in values:
+                        analysis_results['computed_metrics'][metric] = {
+                            'improvement_percentage': values['improvement_vs_average'],
+                            'ensemble_value': values.get('ensemble_value'),
+                            'base_average': values.get('base_average')
+                        }
+    
+    return {
+        "analysis_results": analysis_results,
+        "execution_path": execution_path
+    }
+
+
+def visualization_specification_agent(state: AgentState) -> dict:
+    """Determine which visualizations to generate"""
+    execution_path = state.get('execution_path', [])
+    execution_path.append('visualization_spec')
+    
+    # Only run if visualization is required
+    if not state.get('requires_visualization'):
+        return {"execution_path": execution_path}
+    
+    analysis_results = state.get('analysis_results', {})
+    comparison_type = state.get('comparison_type')
+    
+    prompt = f"""
+Based on the query and analysis results, generate visualization specifications.
+
+Query: {state['user_query']}
+Comparison Type: {comparison_type}
+Analysis Results Available: {list(analysis_results.keys())}
+
+Output a JSON with visualization specs. Each spec should include:
+- type: bar_chart, line_chart, scatter_plot, heatmap, box_plot
+- title: Descriptive title
+- data_key: Which key from analysis_results to use
+- x, y: Column names for axes
+- additional_params: Any extra configuration
+
+Example output:
+{{
+    "visualizations": [
+        {{
+            "type": "bar_chart",
+            "title": "Ensemble vs Base Model Performance",
+            "data_key": "computed_metrics",
+            "x": "metric_name",
+            "y": "improvement_percentage",
+            "additional_params": {{"color": "metric_name"}}
+        }}
+    ]
+}}
+"""
+    
+    structured_llm = llm.with_structured_output(VisualizationSpec)
+    
+    try:
+        result = structured_llm.invoke(prompt)
+        viz_specs = result.visualizations
+    except Exception as e:
+        print(f"Visualization spec generation failed: {e}")
+        # Fallback: Generate default visualization based on comparison type
+        viz_specs = _get_default_viz_specs(comparison_type)
+    
+    return {
+        "visualization_specs": viz_specs,
+        "execution_path": execution_path
+    }
+
+
+def _get_default_viz_specs(comparison_type: str) -> List[Dict[str, Any]]:
+    """Fallback visualization specs based on comparison type"""
+    defaults = {
+        'ensemble_vs_base': [
+            {
+                "type": "bar_chart",
+                "title": "Model Performance Comparison",
+                "data_key": "computed_metrics",
+                "x": "metric_name",
+                "y": "improvement_percentage"
+            }
+        ],
+        'performance': [
+            {
+                "type": "bar_chart",
+                "title": "Performance Metrics",
+                "data_key": "raw_data",
+                "x": "model_name",
+                "y": "metric_value"
+            }
+        ],
+        'drift': [
+            {
+                "type": "line_chart",
+                "title": "Drift Score Over Time",
+                "data_key": "raw_data",
+                "x": "timestamp",
+                "y": "drift_score"
+            }
+        ]
+    }
+    
+    return defaults.get(comparison_type, [])
+
+
+def visualization_rendering_agent(state: AgentState) -> dict:
+    """Generate actual chart objects from specifications"""
+    execution_path = state.get('execution_path', [])
+    execution_path.append('visualization_rendering')
+    
+    viz_specs = state.get('visualization_specs', [])
+    analysis_results = state.get('analysis_results', {})
+    
+    if not viz_specs:
+        return {"execution_path": execution_path}
+    
+    rendered_charts = []
+    
+    for spec in viz_specs:
+        try:
+            chart = _render_chart(spec, analysis_results)
+            if chart:
+                rendered_charts.append({
+                    'title': spec['title'],
+                    'figure': chart,
+                    'type': spec['type']
+                })
+        except Exception as e:
+            print(f"Failed to render chart: {e}")
+            continue
+    
+    return {
+        "rendered_charts": rendered_charts,
+        "execution_path": execution_path
+    }
+
+
+def _render_chart(spec: Dict[str, Any], analysis_results: Dict[str, Any]) -> Any:
+    """Helper function to render individual charts"""
+    data_key = spec.get('data_key', 'raw_data')
+    data = analysis_results.get(data_key)
+    
+    if not data:
+        return None
+    
+    # Convert data to DataFrame if needed
+    if isinstance(data, dict):
+        # Handle computed metrics
+        if data_key == 'computed_metrics':
+            df = pd.DataFrame([
+                {'metric': k, **v} for k, v in data.items()
+            ])
+        else:
+            df = pd.DataFrame([data])
+    elif isinstance(data, list):
+        df = pd.DataFrame(data)
+    else:
+        return None
+    
+    chart_type = spec['type']
+    title = spec['title']
+    
+    # Generate chart based on type
+    if chart_type == 'bar_chart':
+        fig = px.bar(df, x=spec.get('x'), y=spec.get('y'), title=title)
+    elif chart_type == 'line_chart':
+        fig = px.line(df, x=spec.get('x'), y=spec.get('y'), title=title)
+    elif chart_type == 'scatter_plot':
+        fig = px.scatter(df, x=spec.get('x'), y=spec.get('y'), title=title)
+    elif chart_type == 'heatmap':
+        fig = px.imshow(df.corr() if df.shape[0] > 1 else df, title=title)
+    elif chart_type == 'box_plot':
+        fig = px.box(df, y=spec.get('y'), title=title)
+    else:
+        return None
+    
+    return fig
+
+
+def insight_generation_agent(state: AgentState) -> dict:
+    """Generate human-readable narrative insights"""
+    execution_path = state.get('execution_path', [])
+    execution_path.append('insight_generation')
+    
+    analysis_results = state.get('analysis_results', {})
+    context_docs = state.get('context_documents', [])
+    comparison_type = state.get('comparison_type')
+    
+    prompt = f"""Generate a clear, business-focused explanation of the analysis results.
+
+Query: {state['user_query']}
+Comparison Type: {comparison_type}
+
+Analysis Results:
+{json.dumps(analysis_results, indent=2)}
+
+Context:
+{json.dumps(context_docs, indent=2)}
+
+Provide:
+1. Direct answer to the user's question
+2. Key quantitative findings (numbers, percentages)
+3. Contextual reasoning (WHY these results occurred)
+4. Business implications
+5. Recommendations (if applicable)
+
+Keep language simple and avoid technical jargon. Focus on actionable insights."""
+    
+    response = llm.invoke(prompt)
+    
+    return {
+        "messages": [AIMessage(content=response.content)],
+        "final_insights": response.content,
+        "execution_path": execution_path
+    }
+
+
 def orchestrator_agent(state: AgentState) -> dict:
+    """Control flow orchestrator"""
     needs_clarification = state.get('needs_clarification', False)
     loop_count = state.get('loop_count', 0)
     
