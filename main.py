@@ -2,316 +2,226 @@ import os
 import json
 from dotenv import load_dotenv
 from agent.agent import graph
-from langchain_core.messages import AIMessage, ToolMessage
+from langchain_core.messages import AIMessage, ToolMessage, HumanMessage
 
 load_dotenv()
 
+def print_section(title, content=""):
+    print(f"\n{'='*80}")
+    print(f"{title}")
+    print(f"{'='*80}")
+    if content:
+        print(content)
 
-def print_state_info(state):
-    """Print parsed query information and execution path"""
-    print("\n" + "="*80)
-    print("PARSED QUERY INFORMATION")
-    print("="*80)
+def print_node_output(node_name, output_data):
+    print(f"\n[DEBUG] Node: {node_name}")
+    print(f"{'─'*80}")
     
-    if state.get('use_case'):
-        print(f"Use Case: {state['use_case']}")
-    
-    if state.get('models_requested'):
-        print(f"Models: {', '.join(state['models_requested'])}")
-    
-    if state.get('comparison_type'):
-        print(f"Comparison: {state['comparison_type']}")
-    
-    if state.get('time_range'):
-        print(f"Time Range: {state['time_range']}")
-    
-    if state.get('metrics_requested'):
-        print(f"Metrics: {', '.join(state['metrics_requested'])}")
-    
-    if state.get('entities_requested'):
-        print(f"Entities: {', '.join(state['entities_requested'])}")
-    
-    if state.get('requires_visualization'):
-        print(f"Visualization Required: Yes")
-    
-    if state.get('execution_path'):
-        print(f"Path: {' → '.join(state['execution_path'])}")
-    
-    print(f"Next: {state.get('next_action', 'N/A')}")
-    print("="*80 + "\n")
+    if isinstance(output_data, dict):
+        for key, value in output_data.items():
+            if key in ['messages', 'context_documents', 'rendered_charts', 'visualization_specs']:
+                if value:
+                    print(f"  {key}: {len(value) if isinstance(value, list) else 'present'}")
+            elif key == 'parsed_intent':
+                print(f"  parsed_intent: {json.dumps(value, indent=2)}")
+            elif key not in ['execution_path']:
+                if value is not None and value != [] and value != {}:
+                    if isinstance(value, (str, int, float, bool)):
+                        print(f"  {key}: {value}")
+                    elif isinstance(value, list):
+                        print(f"  {key}: {len(value)} items")
+                    elif isinstance(value, dict):
+                        print(f"  {key}: {list(value.keys())}")
+    print(f"{'─'*80}")
 
-
-def print_tool_results(messages):
-    """Print data retrieved from tools"""
-    tool_messages = [msg for msg in messages if isinstance(msg, ToolMessage)]
+def format_assistant_response(state):
+    messages = state.get('messages', [])
     
-    if not tool_messages:
-        return
+    ai_messages = []
+    tool_results = []
     
-    print("\n" + "="*80)
-    print("RETRIEVED DATA")
-    print("="*80)
+    for msg in messages:
+        if isinstance(msg, AIMessage) and msg.content and not msg.tool_calls:
+            ai_messages.append(msg.content)
+        elif isinstance(msg, ToolMessage):
+            try:
+                result = json.loads(msg.content) if isinstance(msg.content, str) else msg.content
+                tool_results.append(result)
+            except:
+                pass
     
-    for i, tool_msg in enumerate(tool_messages, 1):
-        try:
-            result = json.loads(tool_msg.content) if isinstance(tool_msg.content, str) else tool_msg.content
-            
-            print(f"\nResult #{i}:")
-            
-            if isinstance(result, dict) and 'error' in result:
-                print(f"Error: {result['error']}")
-                continue
-            
+    response_parts = []
+    
+    if state.get('needs_clarification'):
+        clarification = state.get('clarification_question', ai_messages[-1] if ai_messages else "Please provide more details.")
+        return clarification
+    
+    if tool_results:
+        for result in tool_results:
             if isinstance(result, dict):
-                if 'models' in result and isinstance(result['models'], list):
-                    print(f"Found {len(result['models'])} model(s)")
-                    for model in result['models'][:3]:
-                        print(f"  - {model.get('model_name', 'Unknown')} ({model.get('model_type', 'N/A')})")
+                if 'error' in result:
+                    response_parts.append(f"❌ {result['error']}")
+                
+                if 'ensemble_name' in result:
+                    response_parts.append(f"📊 Analyzing: {result['ensemble_name']}")
                 
                 if 'comparison' in result:
-                    print("Comparison Results:")
                     comp = result['comparison']
+                    response_parts.append("\n🔍 Performance Comparison:")
                     for metric, values in list(comp.items())[:5]:
                         if isinstance(values, dict):
-                            print(f"  {metric}:")
-                            print(f"    Ensemble: {values.get('ensemble_value', 'N/A')}")
-                            print(f"    Base Avg: {values.get('base_average', 'N/A')}")
-                            if values.get('improvement_vs_average') is not None:
-                                print(f"    Improvement: {values['improvement_vs_average']:.2f}%")
+                            ensemble_val = values.get('ensemble_value', 0)
+                            base_avg = values.get('base_average', 0)
+                            improvement = values.get('improvement_vs_average', 0)
+                            response_parts.append(
+                                f"  • {metric}: Ensemble {ensemble_val:.4f} vs Base Avg {base_avg:.4f} "
+                                f"({improvement:+.2f}% improvement)"
+                            )
+                
+                if 'models' in result and isinstance(result['models'], list):
+                    response_parts.append(f"\n📋 Found {len(result['models'])} model(s):")
+                    for model in result['models'][:5]:
+                        response_parts.append(f"  • {model.get('model_name')} ({model.get('model_type')})")
                 
                 if 'top_features' in result:
-                    print(f"Top Features ({len(result['top_features'])}):")
-                    for feat in result['top_features'][:5]:
-                        print(f"  {feat.get('rank')}. {feat.get('feature_name')} - {feat.get('importance_score', 0):.4f}")
+                    response_parts.append(f"\n🎯 Top Features:")
+                    for feat in result['top_features'][:10]:
+                        response_parts.append(
+                            f"  {feat.get('rank')}. {feat.get('feature_name')}: "
+                            f"{feat.get('importance_score', 0):.4f}"
+                        )
                 
                 if 'drift_details' in result:
-                    print(f"Drift Detection:")
-                    print(f"  With drift: {result.get('models_with_drift', 0)}/{result.get('total_models_checked', 0)}")
-                
-                if 'top_predictions' in result:
-                    print(f"Top Predictions ({len(result['top_predictions'])}):")
-                    for pred in result['top_predictions'][:5]:
-                        print(f"  {pred.get('entity_id')}: {pred.get('prediction_value', 'N/A')}")
-                
-                if 'total_results' in result:
-                    print(f"Total: {result['total_results']}")
-                if 'total_models' in result:
-                    print(f"Total: {result['total_models']}")
-            
-            print()
-            
-        except Exception as e:
-            print(f"Parse error: {e}")
-            print(f"Raw: {tool_msg.content[:200]}...")
+                    drift_count = result.get('models_with_drift', 0)
+                    total = result.get('total_models_checked', 0)
+                    response_parts.append(f"\n⚠️  Drift Detection: {drift_count}/{total} models showing drift")
+                    
+                    for detail in result['drift_details'][:3]:
+                        if detail.get('current_drift_detected'):
+                            response_parts.append(
+                                f"  • {detail['model_name']}: "
+                                f"Drift Score {detail.get('current_drift_score', 'N/A')}"
+                            )
     
-    print("="*80 + "\n")
-
-
-def print_analysis_results(state):
-    """Print analysis and computation results"""
-    analysis_results = state.get('analysis_results')
-    
-    if not analysis_results:
-        return
-    
-    print("\n" + "="*80)
-    print("ANALYSIS RESULTS")
-    print("="*80)
-    
-    computed_metrics = analysis_results.get('computed_metrics', {})
-    if computed_metrics:
-        print("\nComputed Metrics:")
-        for metric_name, values in computed_metrics.items():
-            print(f"  {metric_name}:")
-            for key, val in values.items():
-                if isinstance(val, float):
-                    print(f"    {key}: {val:.4f}")
-                else:
-                    print(f"    {key}: {val}")
-    
-    trends = analysis_results.get('trends', [])
-    if trends:
-        print(f"\nTrends Identified: {len(trends)}")
-        for trend in trends[:3]:
-            print(f"  - {trend}")
-    
-    anomalies = analysis_results.get('anomalies', [])
-    if anomalies:
-        print(f"\nAnomalies Detected: {len(anomalies)}")
-        for anomaly in anomalies[:3]:
-            print(f"  - {anomaly}")
-    
-    print("="*80 + "\n")
-
-
-def display_visualizations(state):
-    """Display rendered charts"""
-    rendered_charts = state.get('rendered_charts', [])
-    
-    if not rendered_charts:
-        return
-    
-    print("\n" + "="*80)
-    print("VISUALIZATIONS")
-    print("="*80)
-    
-    for i, chart_data in enumerate(rendered_charts, 1):
-        title = chart_data.get('title', f'Chart {i}')
-        chart_type = chart_data.get('type', 'unknown')
-        figure = chart_data.get('figure')
+    if state.get('analysis_results'):
+        analysis = state['analysis_results']
+        computed = analysis.get('computed_metrics', {})
         
-        print(f"\n{i}. {title} ({chart_type})")
-        
-        if figure:
-            try:
-                # Display the chart
-                figure.show()
-                print(f"   ✓ Chart displayed successfully")
-            except Exception as e:
-                print(f"   ✗ Failed to display: {e}")
-        else:
-            print(f"   ✗ No figure data available")
+        if computed:
+            response_parts.append("\n📈 Analysis Results:")
+            for metric, values in computed.items():
+                if isinstance(values, dict):
+                    response_parts.append(f"  • {metric}:")
+                    for k, v in values.items():
+                        if isinstance(v, float):
+                            response_parts.append(f"    - {k}: {v:.4f}")
     
-    print("\n" + "="*80 + "\n")
-
-
-def print_final_insights(state):
-    """Print the final narrative insights"""
-    insights = state.get('final_insights')
+    if state.get('final_insights'):
+        response_parts.append(f"\n💡 Insights:\n{state['final_insights']}")
     
-    if not insights:
-        return
+    if state.get('rendered_charts'):
+        charts = state['rendered_charts']
+        response_parts.append(f"\n📊 {len(charts)} visualization(s) generated")
+        for chart in charts:
+            response_parts.append(f"  • {chart.get('title')}")
     
-    print("\n" + "="*80)
-    print("INSIGHTS & RECOMMENDATIONS")
-    print("="*80)
-    print(f"\n{insights}\n")
-    print("="*80 + "\n")
-
+    if not response_parts and ai_messages:
+        return ai_messages[-1]
+    
+    return "\n".join(response_parts) if response_parts else "Processing complete."
 
 def main():
-    print("="*80)
-    print("PHARMA MODEL RESULTS INTERPRETER")
-    print("="*80)
-    print("\nType 'quit' to exit")
-    print("Type 'help' for example queries\n")
+    print_section("PHARMA MODEL INSIGHTS CHATBOT", 
+                  "Ask questions about your model results.\nType 'help' for examples, 'quit' to exit.\n")
     
-    conversation_state = {
-        "messages": [],
-        "user_query": None,
-        "parsed_intent": None,
-        "use_case": None,
-        "models_requested": None,
-        "comparison_type": None,
-        "time_range": None,
-        "metrics_requested": None,
-        "entities_requested": None,
-        "requires_visualization": False,
-        "context_documents": None,
-        "retrieved_data": None,
-        "tool_calls": None,
-        "analysis_results": None,
-        "visualization_specs": None,
-        "rendered_charts": None,
-        "final_insights": None,
-        "needs_clarification": False,
-        "clarification_question": None,
-        "loop_count": 0,
-        "next_action": None,
-        "execution_path": []
-    }
+    conversation_history = []
     
     while True:
-        user_input = input("You: ").strip()
-        
-        if not user_input:
-            continue
-        
-        if user_input.lower() in ['quit', 'exit', 'q']:
-            print("\nGoodbye!\n")
-            break
-        
-        if user_input.lower() == 'help':
-            print("\nExample Queries:")
-            print("  - Compare Random Forest vs XGBoost for NRx forecasting")
-            print("  - Show me ensemble vs base model performance")
-            print("  - What are the top features for the NRx model?")
-            print("  - Has the model drifted recently?")
-            print("  - Display prediction trends over time")
-            print("  - Compare version 1.0 to version 2.0 of the HCP model\n")
-            continue
-        
-        # Reset state for new query
-        conversation_state["user_query"] = user_input
-        conversation_state["execution_path"] = []
-        conversation_state["next_action"] = None
-        conversation_state["requires_visualization"] = False
-        conversation_state["analysis_results"] = None
-        conversation_state["rendered_charts"] = None
-        conversation_state["final_insights"] = None
-        
-        print("\n" + "="*80)
-        print("PROCESSING QUERY")
-        print("="*80 + "\n")
-        
         try:
-            final_state = None
-            all_messages = []
+            user_input = input("\n🗣️  You: ").strip()
             
-            # Stream through the graph
-            for event in graph.stream(conversation_state):
-                for node_name, value in event.items():
-                    print(f"→ Executing: {node_name}")
-                    if 'messages' in value:
-                        all_messages.extend(value['messages'])
-                    final_state = value
+            if not user_input:
+                continue
+            
+            if user_input.lower() in ['quit', 'exit', 'q']:
+                print("\n👋 Goodbye!\n")
+                break
+            
+            if user_input.lower() == 'help':
+                print("\n📚 Example Queries:")
+                examples = [
+                    "Compare Random Forest vs XGBoost",
+                    "Show ensemble vs base model performance",
+                    "What are top features for NRx model?",
+                    "Has the model drifted?",
+                    "Compare version 1.0 to 2.0",
+                    "Show me drift detection results",
+                    "What models do we have for HCP engagement?"
+                ]
+                for ex in examples:
+                    print(f"  • {ex}")
+                continue
+            
+            conversation_history.append(HumanMessage(content=user_input))
+            
+            state = {
+                "messages": conversation_history.copy(),
+                "user_query": user_input,
+                "parsed_intent": None,
+                "use_case": None,
+                "models_requested": None,
+                "comparison_type": None,
+                "time_range": None,
+                "metrics_requested": None,
+                "entities_requested": None,
+                "requires_visualization": False,
+                "context_documents": None,
+                "retrieved_data": None,
+                "tool_calls": None,
+                "analysis_results": None,
+                "visualization_specs": None,
+                "rendered_charts": None,
+                "final_insights": None,
+                "needs_clarification": False,
+                "clarification_question": None,
+                "loop_count": 0,
+                "next_action": None,
+                "execution_path": []
+            }
+            
+            print_section("PROCESSING")
+            
+            final_state = None
+            
+            for event in graph.stream(state):
+                for node_name, node_output in event.items():
+                    print(f"→ {node_name}")
+                    print_node_output(node_name, node_output)
+                    final_state = node_output
             
             if final_state:
-                conversation_state.update(final_state)
-                all_messages = final_state.get('messages', [])
+                response = format_assistant_response(final_state)
+                print_section("ASSISTANT RESPONSE")
+                print(f"\n🤖 Assistant:\n{response}\n")
                 
-                # Print clarification messages if any
-                agent_messages = [msg for msg in all_messages if isinstance(msg, AIMessage)]
-                for msg in agent_messages:
-                    if msg.content and not msg.tool_calls:
-                        if final_state.get('needs_clarification'):
-                            print("\nAgent: " + msg.content)
+                if final_state.get('messages'):
+                    conversation_history = final_state['messages']
                 
-                # Only print detailed results if not asking for clarification
-                if not final_state.get('needs_clarification'):
-                    # Print tool results
-                    tool_messages = [msg for msg in all_messages if isinstance(msg, ToolMessage)]
-                    if tool_messages:
-                        print_tool_results(all_messages)
-                    
-                    # Print analysis results
-                    print_analysis_results(final_state)
-                    
-                    # Display visualizations
-                    display_visualizations(final_state)
-                    
-                    # Print final insights
-                    print_final_insights(final_state)
-                
-                # Print state info
-                print_state_info(final_state)
-                
-                # Update loop count for conversation continuity
-                conversation_state["loop_count"] = final_state.get("loop_count", 0)
+                if final_state.get('rendered_charts'):
+                    for chart_data in final_state['rendered_charts']:
+                        try:
+                            chart_data['figure'].show()
+                        except:
+                            pass
+            else:
+                print("\n⚠️  No response generated. Try rephrasing your query.\n")
         
+        except KeyboardInterrupt:
+            print("\n\n👋 Goodbye!\n")
+            break
         except Exception as e:
-            print(f"\n{'='*80}")
-            print("ERROR")
-            print("="*80)
-            print(f"Error: {str(e)}")
-            print(f"Type: {type(e).__name__}")
-            import traceback
-            traceback.print_exc()
-            print(f"\n{'='*80}\n")
+            print(f"\n❌ Error: {str(e)}")
             print("Try rephrasing your query or type 'help' for examples.\n")
-        
-        print()
-
 
 if __name__ == "__main__":
     main()
