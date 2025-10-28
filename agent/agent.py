@@ -14,7 +14,6 @@ from agent.nodes import (
 from agent.tools import ALL_TOOLS
 from enum import Enum
 
-
 class RouteDecision(Enum):
     END = 'end'
     CONTEXT_RETRIEVAL = 'context_retrieval'
