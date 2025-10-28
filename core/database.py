@@ -1,35 +1,57 @@
 import os
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker, declarative_base
+import psycopg2
+from psycopg2 import pool
 from contextlib import contextmanager
+from typing import Optional
 
-# PostgreSQL connection string
-DATABASE_URL = f"postgresql://{os.getenv('DB_USER')}:{os.getenv('DB_PASSWORD')}@{os.getenv('DB_HOST')}:{os.getenv('DB_PORT')}/{os.getenv('DB_NAME')}"
+# PostgreSQL connection pool
+_connection_pool: Optional[psycopg2.pool.SimpleConnectionPool] = None
 
-# Create engine with connection pooling
-engine = create_engine(
-    DATABASE_URL,
-    echo=False,  # Set to True for SQL query logging
-    pool_pre_ping=True,  # Verify connections before using
-    pool_size=10,
-    max_overflow=20
-)
 
-# Session factory
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+def initialize_connection_pool():
+    """Initialize the connection pool"""
+    global _connection_pool
+    
+    if _connection_pool is None:
+        _connection_pool = psycopg2.pool.SimpleConnectionPool(
+            minconn=1,
+            maxconn=10,
+            host=os.getenv('DB_HOST'),
+            port=os.getenv('DB_PORT', '5432'),
+            database=os.getenv('DB_NAME'),
+            user=os.getenv('DB_USER'),
+            password=os.getenv('DB_PASSWORD')
+        )
+    
+    return _connection_pool
 
-# Base class for ORM models
-Base = declarative_base()
+
+def get_connection_pool():
+    """Get or create connection pool"""
+    if _connection_pool is None:
+        return initialize_connection_pool()
+    return _connection_pool
+
 
 @contextmanager
-def get_db_session():
-    """Context manager for database sessions"""
-    session = SessionLocal()
+def get_db_connection():
+    """Context manager for database connections"""
+    pool = get_connection_pool()
+    conn = pool.getconn()
+    
     try:
-        yield session
-        session.commit()
+        yield conn
+        conn.commit()
     except Exception as e:
-        session.rollback()
+        conn.rollback()
         raise e
     finally:
-        session.close()
+        pool.putconn(conn)
+
+
+def close_connection_pool():
+    """Close all connections in the pool"""
+    global _connection_pool
+    if _connection_pool is not None:
+        _connection_pool.closeall()
+        _connection_pool = None

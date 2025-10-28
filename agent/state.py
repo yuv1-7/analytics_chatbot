@@ -21,6 +21,11 @@ class AgentState(TypedDict):
     # Context retrieval outputs
     context_documents: Optional[List[Dict[str, Any]]]
     
+    # SQL Generation outputs
+    generated_sql: Optional[str]
+    sql_purpose: Optional[str]
+    expected_columns: Optional[List[str]]
+    
     # Data retrieval outputs
     retrieved_data: Optional[Dict[str, Any]]
     tool_calls: Optional[List[Dict[str, Any]]]
