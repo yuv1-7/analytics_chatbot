@@ -64,8 +64,6 @@ def execute_sql_query(sql_query: str) -> dict:
             'columns': []
         }
 
-
-# List of all available tools
 ALL_TOOLS = [
     execute_sql_query
 ]

@@ -15,7 +15,6 @@ class SQLExecutionError(Exception):
 class SQLValidator:
     """Validates SQL queries for safety"""
     
-    # Dangerous keywords that should not be in read-only queries
     FORBIDDEN_KEYWORDS = [
         'INSERT', 'UPDATE', 'DELETE', 'DROP', 'CREATE', 'ALTER', 
         'TRUNCATE', 'GRANT', 'REVOKE', 'EXECUTE', 'EXEC',
@@ -29,15 +28,11 @@ class SQLValidator:
         sql_clean = re.sub(r'--.*$', '', sql, flags=re.MULTILINE)
         sql_clean = re.sub(r'/\*.*?\*/', '', sql_clean, flags=re.DOTALL)
         
-        # Convert to uppercase for checking
         sql_upper = sql_clean.upper()
-        
-        # Check for forbidden keywords
         for keyword in cls.FORBIDDEN_KEYWORDS:
             if re.search(rf'\b{keyword}\b', sql_upper):
                 return False
         
-        # Must contain SELECT or WITH (for CTEs)
         if not (re.search(r'\bSELECT\b', sql_upper) or re.search(r'\bWITH\b', sql_upper)):
             return False
         
@@ -55,7 +50,6 @@ class SQLValidator:
         if not cls.is_read_only(sql):
             return False, "Query contains forbidden operations. Only SELECT queries are allowed."
         
-        # Check for multiple statements (basic check)
         if sql.count(';') > 1:
             return False, "Multiple statements not allowed"
         
@@ -92,7 +86,6 @@ class SQLExecutor:
         Returns:
             Dict with 'success', 'data', 'row_count', 'columns', 'error'
         """
-        # Validate query
         is_valid, error_msg = self.validator.validate_query(sql)
         if not is_valid:
             return {
@@ -105,27 +98,21 @@ class SQLExecutor:
         
         try:
             with get_db_connection() as conn:
-                # Set query timeout
                 with conn.cursor() as cur:
                     cur.execute(f"SET statement_timeout = {self.query_timeout * 1000}")
                 
-                # Execute query with dictionary cursor for named columns
                 with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
                     if params:
                         cur.execute(sql, params)
                     else:
                         cur.execute(sql)
                     
-                    # Fetch results (limited)
                     rows = cur.fetchmany(max_rows)
                     
-                    # Get column names
                     columns = [desc[0] for desc in cur.description] if cur.description else []
                     
-                    # Convert RealDictRow to regular dict
                     data = [dict(row) for row in rows]
                     
-                    # Get total row count (for queries that return more than max_rows)
                     total_rows = cur.rowcount if cur.rowcount != -1 else len(data)
                     
                     return {
@@ -177,7 +164,6 @@ class SQLExecutor:
             result = self.execute_query(query, max_rows=max_rows)
             results.append(result)
             
-            # Stop on first error
             if not result['success']:
                 break
         
@@ -205,7 +191,6 @@ class SQLExecutor:
             output.append(f" (truncated from {result.get('total_rows', 'many')} total rows)")
         output.append("\n\n")
         
-        # Format as readable table
         data = result['data']
         columns = result['columns']
         
@@ -231,7 +216,6 @@ class SQLExecutor:
         return ''.join(output)
 
 
-# Global executor instance
 _executor = None
 
 

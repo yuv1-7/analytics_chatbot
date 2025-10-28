@@ -65,7 +65,7 @@ def print_tool_results(messages):
             print(f"\nSQL Query Result #{i}:")
             
             if not result.get('success'):
-                print(f"❌ Error: {result.get('error', 'Unknown error')}")
+                print(f" Error: {result.get('error', 'Unknown error')}")
                 continue
             
             data = result.get('data', [])
@@ -95,8 +95,8 @@ def print_tool_results(messages):
             print()
             
         except Exception as e:
-            print(f"❌ Parse error: {e}")
-            print(f"   Raw content: {str(tool_msg.content)[:200]}...")
+            print(f"Parse error: {e}")
+            print(f"Raw content: {str(tool_msg.content)[:200]}...")
     
     print("="*80 + "\n")
 
@@ -114,7 +114,7 @@ def print_analysis_results(state):
     
     computed_metrics = analysis_results.get('computed_metrics', {})
     if computed_metrics:
-        print("\n📊 Computed Metrics:")
+        print("\nComputed Metrics:")
         for metric_name, values in computed_metrics.items():
             print(f"  {metric_name}:")
             for key, val in values.items():
@@ -125,13 +125,13 @@ def print_analysis_results(state):
     
     trends = analysis_results.get('trends', [])
     if trends:
-        print(f"\n📈 Trends Identified: {len(trends)}")
+        print(f"\nTrends Identified: {len(trends)}")
         for trend in trends[:3]:
             print(f"  - {trend}")
     
     anomalies = analysis_results.get('anomalies', [])
     if anomalies:
-        print(f"\n⚠️  Anomalies Detected: {len(anomalies)}")
+        print(f"\nAnomalies Detected: {len(anomalies)}")
         for anomaly in anomalies[:3]:
             print(f"  - {anomaly}")
     
@@ -158,13 +158,12 @@ def display_visualizations(state):
         
         if figure:
             try:
-                # Display the chart
                 figure.show()
-                print(f"   ✓ Chart displayed successfully")
+                print(f"Chart displayed successfully")
             except Exception as e:
-                print(f"   ✗ Failed to display: {e}")
+                print(f"Failed to display: {e}")
         else:
-            print(f"   ✗ No figure data available")
+            print(f"No figure data available")
     
     print("\n" + "="*80 + "\n")
 
@@ -177,7 +176,7 @@ def print_final_insights(state):
         return
     
     print("\n" + "="*80)
-    print("💡 INSIGHTS & RECOMMENDATIONS")
+    print("INSIGHTS & RECOMMENDATIONS")
     print("="*80)
     print(f"\n{insights}\n")
     print("="*80 + "\n")
@@ -189,13 +188,12 @@ def main():
     print("="*80)
     print("\nType 'quit' to exit")
     print("Type 'help' for example queries\n")
-    
-    # Initialize database connection pool
+
     try:
         initialize_connection_pool()
-        print("✓ Database connection pool initialized\n")
+        print("Database connection pool initialized\n")
     except Exception as e:
-        print(f"❌ Failed to initialize database: {e}\n")
+        print(f"Failed to initialize database: {e}\n")
         return
     
     conversation_state = {
@@ -238,7 +236,7 @@ def main():
                 break
             
             if user_input.lower() == 'help':
-                print("\n📖 Example Queries:")
+                print("\n Example Queries:")
                 print("  - Compare Random Forest vs XGBoost for NRx forecasting")
                 print("  - Show me ensemble vs base model performance")
                 print("  - What are the top features for the NRx model?")
@@ -261,14 +259,13 @@ def main():
             conversation_state["sql_purpose"] = None
             
             print("\n" + "="*80)
-            print("🔄 PROCESSING QUERY")
+            print(" PROCESSING QUERY")
             print("="*80 + "\n")
             
             try:
                 final_state = None
                 all_messages = []
                 
-                # Stream through the graph
                 for event in graph.stream(conversation_state):
                     for node_name, value in event.items():
                         print(f"→ Executing: {node_name}")
@@ -285,47 +282,42 @@ def main():
                     for msg in agent_messages:
                         if msg.content and not msg.tool_calls:
                             if final_state.get('needs_clarification'):
-                                print("\n💬 Agent: " + msg.content)
+                                print("\nAgent: " + msg.content)
                     
                     # Only print detailed results if not asking for clarification
                     if not final_state.get('needs_clarification'):
-                        # Print tool results
+
                         tool_messages = [msg for msg in all_messages if isinstance(msg, ToolMessage)]
                         if tool_messages:
                             print_tool_results(all_messages)
                         
-                        # Print analysis results
                         print_analysis_results(final_state)
                         
-                        # Display visualizations
                         display_visualizations(final_state)
                         
-                        # Print final insights
                         print_final_insights(final_state)
                     
-                    # Print state info
                     print_state_info(final_state)
                     
-                    # Update loop count for conversation continuity
                     conversation_state["loop_count"] = final_state.get("loop_count", 0)
             
             except Exception as e:
                 print(f"\n{'='*80}")
-                print("❌ ERROR")
+                print(" ERROR")
                 print("="*80)
                 print(f"Error: {str(e)}")
                 print(f"Type: {type(e).__name__}")
                 import traceback
                 traceback.print_exc()
                 print(f"\n{'='*80}\n")
-                print("💡 Try rephrasing your query or type 'help' for examples.\n")
+                print(" Try rephrasing your query or type 'help' for examples.\n")
             
             print()
     
     finally:
         # Close database connections on exit
         close_connection_pool()
-        print("✓ Database connections closed")
+        print(" Database connections closed")
 
 
 if __name__ == "__main__":

@@ -17,7 +17,6 @@ llm = ChatGoogleGenerativeAI(
     temperature=0.7
 )
 
-# Bind tools to LLM for SQL execution
 llm_with_tools = llm.bind_tools(ALL_TOOLS)
 
 
@@ -188,7 +187,6 @@ def sql_generation_agent(state: AgentState) -> dict:
     execution_path = state.get('execution_path', [])
     execution_path.append('sql_generation')
     
-    # Build context for SQL generation
     use_case = state.get('use_case')
     models_requested = state.get('models_requested', [])
     comparison_type = state.get('comparison_type')
@@ -344,20 +342,18 @@ def data_retrieval_agent(state: AgentState) -> dict:
             "messages": [AIMessage(content="No SQL query was generated")]
         }
     
-    # Build message to call the tool
     context = f"""Execute the following SQL query that was generated to answer the user's question:
 
 User Query: {state['user_query']}
 Query Purpose: {state.get('sql_purpose', 'Data retrieval')}
 
-Use the execute_sql_query tool to run this query."""
+Use the execute_sql_query tool to run this query. """
     
     messages = [
         SystemMessage(content=context),
         HumanMessage(content=generated_sql)
     ]
     
-    # Get tool call from LLM
     response = llm_with_tools.invoke(messages)
     
     return {
@@ -371,7 +367,6 @@ def analysis_computation_agent(state: AgentState) -> dict:
     execution_path = state.get('execution_path', [])
     execution_path.append('analysis_computation')
     
-    # Extract data from tool messages
     messages = state.get('messages', [])
     tool_results = []
     
@@ -384,7 +379,6 @@ def analysis_computation_agent(state: AgentState) -> dict:
             except:
                 continue
     
-    # Perform analysis based on comparison type
     analysis_results = {
         'raw_data': tool_results,
         'computed_metrics': {},
@@ -394,12 +388,10 @@ def analysis_computation_agent(state: AgentState) -> dict:
     
     comparison_type = state.get('comparison_type')
     
-    # Example: Compute percentage improvements for ensemble comparisons
     if comparison_type == 'ensemble_vs_base' and tool_results:
         for result in tool_results:
             if result.get('success') and result.get('data'):
                 data = result['data']
-                # Process ensemble vs base comparison
                 for row in data:
                     if 'ensemble_advantage' in row:
                         metric_name = row.get('model_name', 'ensemble')
@@ -422,7 +414,6 @@ def visualization_specification_agent(state: AgentState) -> dict:
     execution_path = state.get('execution_path', [])
     execution_path.append('visualization_spec')
     
-    # Only run if visualization is required
     if not state.get('requires_visualization'):
         return {"execution_path": execution_path}
     
@@ -549,9 +540,7 @@ def _render_chart(spec: Dict[str, Any], analysis_results: Dict[str, Any]) -> Any
     if not data:
         return None
     
-    # Convert data to DataFrame if needed
     if isinstance(data, dict):
-        # Handle computed metrics
         if data_key == 'computed_metrics':
             df = pd.DataFrame([
                 {'metric': k, **v} for k, v in data.items()
@@ -559,7 +548,6 @@ def _render_chart(spec: Dict[str, Any], analysis_results: Dict[str, Any]) -> Any
         else:
             df = pd.DataFrame([data])
     elif isinstance(data, list):
-        # Extract data from tool results
         if data and isinstance(data[0], dict) and 'data' in data[0]:
             df = pd.DataFrame(data[0]['data'])
         else:
@@ -572,8 +560,6 @@ def _render_chart(spec: Dict[str, Any], analysis_results: Dict[str, Any]) -> Any
     
     chart_type = spec['type']
     title = spec['title']
-    
-    # Generate chart based on type
     try:
         if chart_type == 'bar_chart':
             fig = px.bar(df, x=spec.get('x'), y=spec.get('y'), title=title)

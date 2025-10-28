@@ -109,14 +109,10 @@ def route_after_insights(state: AgentState) -> str:
     """Route after insights generation to end"""
     return RouteDecision.END.value
 
-
-# Create tool node
 tool_node = ToolNode(ALL_TOOLS)
 
-# Build the graph
 builder = StateGraph(AgentState)
 
-# Add all nodes
 builder.add_node('query_understanding', query_understanding_agent)
 builder.add_node('orchestrator', orchestrator_agent)
 builder.add_node('context_retrieval', context_retrieval_agent)
@@ -128,11 +124,9 @@ builder.add_node('visualization_spec', visualization_specification_agent)
 builder.add_node('visualization_rendering', visualization_rendering_agent)
 builder.add_node('insight_generation', insight_generation_agent)
 
-# Add edges
 builder.add_edge(START, 'query_understanding')
 builder.add_edge('query_understanding', 'orchestrator')
 
-# Orchestrator routes
 builder.add_conditional_edges(
     'orchestrator',
     route_after_orchestrator,
@@ -141,8 +135,6 @@ builder.add_conditional_edges(
         RouteDecision.END.value: END
     }
 )
-
-# Context retrieval routes to SQL generation
 builder.add_conditional_edges(
     'context_retrieval',
     route_after_context_retrieval,
@@ -150,8 +142,6 @@ builder.add_conditional_edges(
         RouteDecision.SQL_GENERATION.value: 'sql_generation'
     }
 )
-
-# SQL generation routes to data retrieval
 builder.add_conditional_edges(
     'sql_generation',
     route_after_sql_generation,
@@ -160,8 +150,6 @@ builder.add_conditional_edges(
         RouteDecision.INSIGHTS.value: 'insight_generation'
     }
 )
-
-# Data retrieval routes
 builder.add_conditional_edges(
     'data_retrieval',
     route_after_data_retrieval,
@@ -170,8 +158,6 @@ builder.add_conditional_edges(
         RouteDecision.ANALYSIS.value: 'analysis'
     }
 )
-
-# Tools route to analysis
 builder.add_conditional_edges(
     'tools',
     route_after_tools,
@@ -179,8 +165,6 @@ builder.add_conditional_edges(
         RouteDecision.ANALYSIS.value: 'analysis'
     }
 )
-
-# Analysis routes
 builder.add_conditional_edges(
     'analysis',
     route_after_analysis,
@@ -189,8 +173,6 @@ builder.add_conditional_edges(
         RouteDecision.INSIGHTS.value: 'insight_generation'
     }
 )
-
-# Visualization spec routes
 builder.add_conditional_edges(
     'visualization_spec',
     route_after_viz_spec,
@@ -199,8 +181,6 @@ builder.add_conditional_edges(
         RouteDecision.INSIGHTS.value: 'insight_generation'
     }
 )
-
-# Visualization rendering routes
 builder.add_conditional_edges(
     'visualization_rendering',
     route_after_viz_rendering,
@@ -208,8 +188,6 @@ builder.add_conditional_edges(
         RouteDecision.INSIGHTS.value: 'insight_generation'
     }
 )
-
-# Insights routes to end
 builder.add_conditional_edges(
     'insight_generation',
     route_after_insights,
@@ -217,6 +195,4 @@ builder.add_conditional_edges(
         RouteDecision.END.value: END
     }
 )
-
-# Compile the graph
 graph = builder.compile()
