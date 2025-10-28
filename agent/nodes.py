@@ -138,27 +138,76 @@ Examples:
 
 
 def context_retrieval_agent(state: AgentState) -> dict:
-    """Retrieve relevant context from vector DB (stub for now)"""
+    """Retrieve relevant context from vector DB (COMMENTED OUT - TO BE IMPLEMENTED)"""
     execution_path = state.get('execution_path', [])
     execution_path.append('context_retrieval')
     
+    # ============================================================================
+    # VECTOR DB RETRIEVAL - COMMENTED OUT
+    # ============================================================================
     # TODO: Implement ChromaDB retrieval
-    # For now, return placeholder context
+    # Example implementation:
+    #
+    # from langchain.vectorstores import Chroma
+    # from langchain.embeddings import GoogleGenerativeAIEmbeddings
+    #
+    # embeddings = GoogleGenerativeAIEmbeddings(
+    #     model="models/embedding-001",
+    #     google_api_key=os.getenv("gemini_api_key")
+    # )
+    #
+    # vectorstore = Chroma(
+    #     persist_directory="./chroma_db",
+    #     embedding_function=embeddings,
+    #     collection_name="pharma_models_context"
+    # )
+    #
+    # use_case = state.get('use_case')
+    # models = state.get('models_requested', [])
+    # comparison_type = state.get('comparison_type')
+    #
+    # # Build search query
+    # search_parts = []
+    # if use_case:
+    #     search_parts.append(f"use case: {use_case}")
+    # if models:
+    #     search_parts.append(f"models: {', '.join(models)}")
+    # if comparison_type:
+    #     search_parts.append(f"comparison: {comparison_type}")
+    #
+    # search_query = " ".join(search_parts)
+    #
+    # # Retrieve relevant documents
+    # docs = vectorstore.similarity_search(search_query, k=5)
+    #
+    # context_docs = []
+    # for doc in docs:
+    #     context_docs.append({
+    #         'type': doc.metadata.get('type', 'general'),
+    #         'content': doc.page_content,
+    #         'metadata': doc.metadata
+    #     })
+    # ============================================================================
+    
+    # Placeholder: Return empty context for now
     context_docs = []
     
+    # Optional: Add basic context based on query parameters (without vector DB)
     use_case = state.get('use_case')
     models = state.get('models_requested', [])
     
     if use_case:
         context_docs.append({
             'type': 'use_case_context',
-            'content': f'Context for {use_case}'
+            'content': f'Context for {use_case} (Vector DB retrieval disabled)',
+            'source': 'placeholder'
         })
     
     if models:
         context_docs.append({
             'type': 'model_context',
-            'content': f'Information about {", ".join(models)}'
+            'content': f'Information about {", ".join(models)} (Vector DB retrieval disabled)',
+            'source': 'placeholder'
         })
     
     return {
