@@ -6,6 +6,7 @@ from agent.agent import graph
 from langchain_core.messages import AIMessage, ToolMessage, HumanMessage
 from core.database import initialize_connection_pool, close_connection_pool
 import plotly.graph_objects as go
+from datetime import datetime
 
 # Load environment variables
 load_dotenv()
@@ -15,211 +16,156 @@ st.set_page_config(
     page_title="Pharma Analytics Assistant",
     page_icon="🏥",
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="collapsed"
 )
 
-# Custom CSS for better styling with improved visibility
+# Simple and Clean CSS
 st.markdown("""
 <style>
+    /* Hide sidebar */
+    [data-testid="stSidebar"] {
+        display: none;
+    }
+    
     /* Main container */
     .main {
-        background-color: #f8f9fa;
+        background-color: #1a1a1a;
+        padding: 2rem 4rem;
     }
     
-    /* Header styling */
-    .main-header {
-        font-size: 2.5rem;
-        font-weight: 700;
-        color: #1a1a1a;
+    /* Header */
+    .app-header {
+        background-color: #e8e8e8;
+        padding: 2rem;
+        border-radius: 12px;
         text-align: center;
         margin-bottom: 2rem;
-        padding: 1rem;
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        -webkit-background-clip: text;
-        -webkit-text-fill-color: transparent;
-        background-clip: text;
     }
     
-    /* Chat message containers */
-    .chat-message {
-        padding: 1.25rem;
-        border-radius: 0.75rem;
-        margin-bottom: 1rem;
-        display: flex;
-        flex-direction: column;
-        box-shadow: 0 2px 8px rgba(0,0,0,0.08);
-        line-height: 1.6;
-    }
-    
-    .user-message {
-        background-color: #e3f2fd;
-        border-left: 5px solid #1976d2;
-        color: #1a1a1a;
-    }
-    
-    .user-message strong {
-        color: #1565c0;
-        font-size: 1rem;
+    .app-title {
+        font-size: 2.5rem;
         font-weight: 600;
+        color: #7c7ce8;
+        margin: 0;
     }
     
-    .assistant-message {
-        background-color: #ffffff;
-        border-left: 5px solid #43a047;
-        color: #2c3e50;
-    }
-    
-    .assistant-message strong {
-        color: #2e7d32;
+    .app-subtitle {
         font-size: 1rem;
-        font-weight: 600;
-    }
-    
-    /* Message content text */
-    .message-content {
-        color: #2c3e50;
-        font-size: 0.95rem;
+        color: #666;
         margin-top: 0.5rem;
-        white-space: pre-wrap;
-        word-wrap: break-word;
     }
     
-    /* Info boxes with better contrast */
-    .info-box {
-        background-color: #e3f2fd;
-        padding: 1rem;
-        border-radius: 0.5rem;
-        border-left: 4px solid #1976d2;
-        margin: 1rem 0;
-        color: #1a1a1a;
+    /* Section headers */
+    .section-header {
+        font-size: 1.5rem;
+        color: #ffffff;
         font-weight: 500;
+        margin: 2rem 0 1rem 0;
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
     }
     
-    .error-box {
-        background-color: #ffebee;
-        padding: 1rem;
-        border-radius: 0.5rem;
-        border-left: 4px solid #d32f2f;
-        margin: 1rem 0;
-        color: #1a1a1a;
-        font-weight: 500;
+    /* Chat messages */
+    .chat-message {
+        padding: 1.2rem;
+        margin-bottom: 1rem;
+        border-radius: 8px;
+        background-color: #d0e8f8;
+        color: #000;
     }
     
-    .success-box {
-        background-color: #e8f5e9;
-        padding: 1rem;
-        border-radius: 0.5rem;
-        border-left: 4px solid #43a047;
-        margin: 1rem 0;
-        color: #1a1a1a;
-        font-weight: 500;
+    .message-header {
+        font-weight: 600;
+        margin-bottom: 0.5rem;
+        font-size: 0.95rem;
     }
     
-    /* Sidebar styling */
-    .css-1d391kg, [data-testid="stSidebar"] {
-        background-color: #ffffff;
+    .message-content {
+        line-height: 1.6;
+        font-size: 0.95rem;
     }
     
-    /* Sidebar text */
-    .css-1d391kg p, [data-testid="stSidebar"] p {
-        color: #2c3e50;
+    /* Status indicator */
+    .status-badge {
+        display: inline-block;
+        padding: 0.5rem 1rem;
+        background-color: #d4edda;
+        color: #155724;
+        border-radius: 6px;
         font-size: 0.9rem;
+        margin-bottom: 1rem;
     }
     
-    /* Expander styling */
-    .streamlit-expanderHeader {
-        background-color: #f5f5f5;
-        color: #1a1a1a;
-        font-weight: 600;
-        font-size: 0.95rem;
+    /* Input section */
+    .input-section {
+        background-color: #2a2a2a;
+        padding: 1.5rem;
+        border-radius: 8px;
+        margin-top: 2rem;
     }
     
-    /* Button styling */
-    .stButton>button {
-        width: 100%;
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        color: white;
-        border-radius: 0.5rem;
-        padding: 0.6rem 1rem;
-        border: none;
-        font-weight: 600;
-        font-size: 0.95rem;
-        transition: all 0.3s ease;
-    }
-    
-    .stButton>button:hover {
-        background: linear-gradient(135deg, #5568d3 0%, #5f3d85 100%);
-        transform: translateY(-2px);
-        box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
-    }
-    
-    /* Input field styling */
     .stTextInput>div>div>input {
-        background-color: #ffffff;
-        color: #1a1a1a;
-        border: 2px solid #e0e0e0;
-        border-radius: 0.5rem;
+        background-color: #000000;
+        border: 2px solid #ddd;
+        border-radius: 6px;
         padding: 0.75rem;
         font-size: 0.95rem;
     }
     
     .stTextInput>div>div>input:focus {
-        border-color: #667eea;
-        box-shadow: 0 0 0 2px rgba(102, 126, 234, 0.2);
+        border-color: #7c7ce8;
+        box-shadow: none;
     }
     
-    /* Metric cards */
-    .metric-card {
-        background-color: #ffffff;
-        padding: 1rem;
-        border-radius: 0.5rem;
-        box-shadow: 0 2px 6px rgba(0,0,0,0.1);
-        margin: 0.5rem 0;
-        border: 1px solid #e0e0e0;
+    /* Buttons */
+    .stButton>button {
+        background-color: #7c7ce8;
+        color: white;
+        border: none;
+        border-radius: 6px;
+        padding: 0.75rem 2rem;
+        font-weight: 500;
+        transition: background-color 0.2s;
     }
     
-    /* Data table styling */
-    .dataframe {
-        font-size: 0.85rem;
-        color: #2c3e50;
+    .stButton>button:hover {
+        background-color: #6565d8;
+    }
+    
+    /* Expanders */
+    .streamlit-expanderHeader {
+        background-color: #2a2a2a;
+        color: #ffffff;
+        border-radius: 6px;
+        font-weight: 500;
+    }
+    
+    /* Metrics */
+    [data-testid="stMetricValue"] {
+        color: #ffffff;
+    }
+    
+    [data-testid="stMetricLabel"] {
+        color: #cccccc;
     }
     
     /* Code blocks */
-    code {
-        background-color: #f5f5f5;
-        color: #d32f2f;
-        padding: 0.2rem 0.4rem;
-        border-radius: 0.25rem;
-        font-size: 0.9rem;
-    }
-    
-    /* Headers in content */
-    h1, h2, h3, h4, h5, h6 {
-        color: #1a1a1a;
-        font-weight: 600;
-    }
-    
-    /* Markdown text */
-    .markdown-text-container {
-        color: #2c3e50;
-        font-size: 0.95rem;
-    }
-    
-    /* Selectbox */
-    .stSelectbox>div>div {
-        background-color: #ffffff;
-        color: #1a1a1a;
+    .stCodeBlock {
+        background-color: #2a2a2a;
+        border-radius: 6px;
     }
     
     /* Progress bar */
-    .stProgress > div > div > div > div {
-        background-color: #667eea;
+    .stProgress > div > div > div {
+        background-color: #7c7ce8;
     }
     
-    /* Footer */
-    .footer-text {
-        color: #6c757d;
-        font-size: 0.85rem;
+    /* Remove default padding */
+    .block-container {
+        padding-top: 2rem;
+        padding-bottom: 2rem;
+        max-width: 1200px;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -283,7 +229,7 @@ def format_tool_results(messages):
                 results_data.append({
                     'row_count': result.get('row_count', 0),
                     'columns': result.get('columns', []),
-                    'data': data[:5],  # First 5 rows
+                    'data': data[:5],
                     'total_rows': len(data),
                     'truncated': result.get('truncated', False)
                 })
@@ -292,39 +238,6 @@ def format_tool_results(messages):
     
     return results_data if results_data else None
 
-def display_parsed_intent(state):
-    """Display parsed query information in sidebar"""
-    if not state.get('parsed_intent'):
-        return
-    
-    with st.sidebar.expander("📊 Query Analysis", expanded=True):
-        if state.get('use_case'):
-            st.markdown(f"**Use Case:** `{state['use_case']}`")
-        
-        if state.get('models_requested'):
-            st.markdown(f"**Models:** `{', '.join(state['models_requested'])}`")
-        
-        if state.get('comparison_type'):
-            st.markdown(f"**Comparison:** `{state['comparison_type']}`")
-        
-        if state.get('metrics_requested'):
-            st.markdown(f"**Metrics:** `{', '.join(state['metrics_requested'])}`")
-        
-        if state.get('requires_visualization'):
-            st.markdown("**Visualization:** ✅ Required")
-        
-        if state.get('execution_path'):
-            path_str = ' → '.join(state['execution_path'])
-            st.markdown(f"**Execution Path:**")
-            st.code(path_str, language=None)
-
-def display_sql_query(state):
-    """Display generated SQL query"""
-    if state.get('generated_sql'):
-        with st.sidebar.expander("🔍 Generated SQL", expanded=False):
-            st.markdown(f"**Purpose:** {state.get('sql_purpose', 'N/A')}")
-            st.code(state['generated_sql'], language='sql')
-
 def display_data_table(results_data):
     """Display retrieved data in tables"""
     if not results_data:
@@ -332,16 +245,17 @@ def display_data_table(results_data):
     
     with st.expander("📄 Retrieved Data", expanded=False):
         for i, result in enumerate(results_data, 1):
-            st.markdown(f"### Result Set {i}")
-            st.info(f"Retrieved {result['row_count']} rows")
+            st.write(f"**Result Set {i}**")
+            
+            col1, col2, col3 = st.columns(3)
+            col1.metric("Rows", result['row_count'])
+            col2.metric("Columns", len(result['columns']))
+            col3.metric("Showing", f"{min(5, result['total_rows'])}/{result['total_rows']}")
             
             if result['data']:
                 import pandas as pd
                 df = pd.DataFrame(result['data'])
-                st.dataframe(df, use_container_width=True, height=300)
-                
-                if result['total_rows'] > 5:
-                    st.caption(f"📊 Showing first 5 of {result['total_rows']} total rows")
+                st.dataframe(df, use_container_width=True)
 
 def display_analysis_metrics(state):
     """Display analysis metrics"""
@@ -354,17 +268,14 @@ def display_analysis_metrics(state):
     
     if computed_metrics:
         with st.expander("📈 Computed Metrics", expanded=True):
-            num_metrics = len(computed_metrics)
-            cols = st.columns(min(num_metrics, 3))
-            
-            for idx, (metric_name, values) in enumerate(computed_metrics.items()):
-                with cols[idx % 3]:
-                    st.markdown(f"### {metric_name}")
-                    for key, val in values.items():
-                        if isinstance(val, float):
-                            st.metric(label=key, value=f"{val:.4f}")
-                        else:
-                            st.metric(label=key, value=str(val))
+            for metric_name, values in computed_metrics.items():
+                st.write(f"**{metric_name}**")
+                cols = st.columns(len(values))
+                for idx, (key, val) in enumerate(values.items()):
+                    if isinstance(val, float):
+                        cols[idx].metric(key, f"{val:.4f}")
+                    else:
+                        cols[idx].metric(key, str(val))
 
 def display_visualizations(state):
     """Display rendered charts"""
@@ -373,21 +284,19 @@ def display_visualizations(state):
     if not rendered_charts:
         return
     
-    st.markdown("## 📊 Visualizations")
+    st.markdown('<div class="section-header">📊 Visualizations</div>', unsafe_allow_html=True)
     
     for i, chart_data in enumerate(rendered_charts):
         title = chart_data.get('title', f'Chart {i+1}')
         figure = chart_data.get('figure')
         
-        st.markdown(f"### {title}")
         if figure:
             st.plotly_chart(figure, use_container_width=True, key=f"chart_{i}")
         else:
-            st.warning(f"⚠️ No figure data available for {title}")
+            st.warning(f"No figure data available for {title}")
 
 def process_query(user_input):
     """Process user query through the agent graph"""
-    # Update conversation state
     st.session_state.conversation_state["user_query"] = user_input
     st.session_state.conversation_state["execution_path"] = []
     st.session_state.conversation_state["next_action"] = None
@@ -396,30 +305,26 @@ def process_query(user_input):
         final_state = None
         all_messages = []
         
-        # Create a progress bar
         progress_bar = st.progress(0)
         status_text = st.empty()
         
-        # Stream through the graph
         steps = []
         for event in graph.stream(st.session_state.conversation_state):
             for node_name, value in event.items():
                 steps.append(node_name)
-                status_text.markdown(f"**⚙️ Executing:** `{node_name}`")
-                progress_bar.progress(min(len(steps) / 10, 1.0))  # Approximate progress
+                status_text.text(f"Processing: {node_name}")
+                progress_bar.progress(min(len(steps) / 10, 1.0))
                 
                 if 'messages' in value:
                     all_messages.extend(value['messages'])
                 final_state = value
         
-        progress_bar.progress(100)
-        status_text.empty()
         progress_bar.empty()
+        status_text.empty()
         
         if final_state:
             st.session_state.conversation_state.update(final_state)
             
-            # Extract assistant response
             assistant_response = {
                 'type': 'assistant',
                 'content': '',
@@ -429,7 +334,6 @@ def process_query(user_input):
                 'tool_results': format_tool_results(all_messages)
             }
             
-            # Get insights or clarification
             if final_state.get('needs_clarification'):
                 assistant_response['content'] = final_state.get('clarification_question', 'Could you please provide more details?')
             else:
@@ -447,21 +351,20 @@ def display_chat_message(message):
     """Display a chat message"""
     if message['type'] == 'user':
         st.markdown(f"""
-        <div class="chat-message user-message">
-            <strong>👤 You</strong>
+        <div class="chat-message">
+            <div class="message-header">👤 You</div>
             <div class="message-content">{message['content']}</div>
         </div>
         """, unsafe_allow_html=True)
     
     elif message['type'] == 'assistant':
         st.markdown(f"""
-        <div class="chat-message assistant-message">
-            <strong>🤖 Assistant</strong>
+        <div class="chat-message">
+            <div class="message-header">🤖 Assistant</div>
             <div class="message-content">{message['content']}</div>
         </div>
         """, unsafe_allow_html=True)
         
-        # Display additional information
         if message.get('tool_results'):
             display_data_table(message['tool_results'])
         
@@ -472,161 +375,86 @@ def display_chat_message(message):
             display_visualizations(message['state'])
     
     elif message['type'] == 'error':
-        st.markdown(f"""
-        <div class="error-box">
-            <strong>⚠️ Error</strong><br>
-            {message['content']}
-        </div>
-        """, unsafe_allow_html=True)
+        st.error(f"⚠️ {message['content']}")
 
 def main():
     initialize_session_state()
     
     # Header
-    st.markdown('<div class="main-header">🏥 Pharma Analytics Assistant</div>', unsafe_allow_html=True)
+    st.markdown("""
+    <div class="app-header">
+        <div class="app-title">🏥 Pharma Analytics Assistant</div>
+        <div class="app-subtitle">AI-Powered Insights for Healthcare Analytics</div>
+    </div>
+    """, unsafe_allow_html=True)
     
-    # Sidebar
-    with st.sidebar:
-        st.markdown("# 🔬 Analytics Control")
-        st.markdown("---")
-        
-        # Database status
-        if st.session_state.db_initialized:
-            st.markdown('<div class="success-box">✅ Database Connected</div>', unsafe_allow_html=True)
-        else:
-            st.markdown(f'<div class="error-box">❌ Database Error<br><small>{st.session_state.get("db_error", "Unknown error")}</small></div>', unsafe_allow_html=True)
-        
-        st.markdown("---")
-        
-        # Quick actions
-        st.markdown("### 🚀 Quick Start")
-        
-        example_queries = [
-            "Compare Random Forest vs XGBoost for NRx forecasting",
-            "Show ensemble vs base model performance",
-            "Top features for NRx model",
-            "Check for model drift",
-            "Compare version 1.0 to 2.0"
-        ]
-        
-        selected_example = st.selectbox(
-            "Select an example query:",
-            ["Choose an example..."] + example_queries,
-            key="example_query"
-        )
-        
-        if selected_example != "Choose an example..." and st.button("▶️ Run Example", use_container_width=True):
-            st.session_state.chat_history.append({
-                'type': 'user',
-                'content': selected_example
-            })
-            
-            with st.spinner("🔄 Processing..."):
-                response = process_query(selected_example)
-                st.session_state.chat_history.append(response)
-            
-            st.rerun()
-        
-        st.markdown("---")
-        
-        # Display parsed intent if available
-        if st.session_state.chat_history:
-            last_response = st.session_state.chat_history[-1]
-            if last_response.get('type') == 'assistant' and last_response.get('state'):
-                display_parsed_intent(last_response['state'])
-                display_sql_query(last_response['state'])
-        
-        st.markdown("---")
-        
-        # Clear chat button
-        if st.button("🗑️ Clear Chat History", use_container_width=True):
-            st.session_state.chat_history = []
-            st.session_state.conversation_state["messages"] = []
-            st.session_state.conversation_state["loop_count"] = 0
-            st.rerun()
-        
-        # Help section
-        with st.expander("ℹ️ Help & Guide"):
-            st.markdown("""
-            **Available Use Cases:**
-            - 🔮 NRx Forecasting
-            - 👥 HCP Engagement
-            - 📊 Feature Importance Analysis
-            - 🎯 Model Drift Detection
-            - 💬 Messaging Optimization
-            
-            **Query Examples:**
-            - Compare models for [use case]
-            - Show me [metric] for [model]
-            - What are the top features?
-            - Has the model drifted?
-            - Compare version X to Y
-            """)
+    # Database status
+    if st.session_state.db_initialized:
+        st.markdown('<div class="status-badge">● Database Connected</div>', unsafe_allow_html=True)
+    else:
+        st.error(f"❌ Database Error: {st.session_state.get('db_error', 'Unknown error')}")
     
-    # Main chat area
-    st.markdown("## 💬 Conversation")
-    chat_container = st.container()
+    # Conversation section
+    st.markdown('<div class="section-header">💬 Conversation</div>', unsafe_allow_html=True)
     
-    with chat_container:
-        if not st.session_state.chat_history:
-            st.markdown("""
-            <div class="info-box">
-                <strong>👋 Welcome!</strong><br>
-                I'm your Pharma Analytics Assistant. Ask me about model performance, feature importance, 
-                drift detection, or ensemble comparisons. Select an example from the sidebar to get started!
-            </div>
-            """, unsafe_allow_html=True)
-        else:
-            # Display chat history
-            for message in st.session_state.chat_history:
-                display_chat_message(message)
+    if not st.session_state.chat_history:
+        st.info("""
+        👋 **Welcome to Pharma Analytics Assistant!**
+        
+        I can help you analyze pharmaceutical data, compare models, detect drift, and generate insights.
+        
+        **What I can do:**
+        - ✨ Compare ML Models
+        - 📊 Feature Analysis  
+        - 🎯 Drift Detection
+        - 📈 Generate Visualizations
+        - 🔍 SQL Generation
+        
+        Type your question below to get started!
+        """)
+    else:
+        for message in st.session_state.chat_history:
+            display_chat_message(message)
     
-    # Chat input at the bottom
+    # Input section
     st.markdown("---")
-    st.markdown("### ✍️ Ask a Question")
     
     col1, col2 = st.columns([5, 1])
     
     with col1:
         user_input = st.text_input(
-            "Type your question here...",
+            "Ask a question",
             placeholder="e.g., Compare Random Forest vs XGBoost performance...",
-            key="user_input",
             label_visibility="collapsed"
         )
     
     with col2:
-        send_button = st.button("📤 Send", use_container_width=True, type="primary")
+        send_button = st.button("Send", use_container_width=True, type="primary")
     
-    # Process input
     if send_button and user_input:
-        # Add user message to history
         st.session_state.chat_history.append({
             'type': 'user',
             'content': user_input
         })
         
-        # Process query
-        with st.spinner("🔄 Processing your query..."):
+        with st.spinner("Processing..."):
             response = process_query(user_input)
             st.session_state.chat_history.append(response)
         
-        # Clear input and rerun
         st.rerun()
     
-    # Footer
-    st.markdown("---")
-    st.markdown(
-        '<div class="footer-text" style="text-align: center;">'
-        '⚡ Powered by LangGraph & Google Gemini | 🏥 Pharma Analytics Platform'
-        '</div>',
-        unsafe_allow_html=True
-    )
+    # Clear chat
+    if st.session_state.chat_history:
+        st.markdown("---")
+        if st.button("🗑️ Clear Chat", use_container_width=False):
+            st.session_state.chat_history = []
+            st.session_state.conversation_state["messages"] = []
+            st.session_state.conversation_state["loop_count"] = 0
+            st.rerun()
 
 if __name__ == "__main__":
     try:
         main()
     finally:
-        # Cleanup on app shutdown
         if st.session_state.get('db_initialized'):
             close_connection_pool()
