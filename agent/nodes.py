@@ -11,6 +11,7 @@ from core.schema_context import SCHEMA_CONTEXT, METRIC_GUIDE
 import plotly.express as px
 import plotly.graph_objects as go
 import pandas as pd
+import numpy as np
 
 llm = ChatGoogleGenerativeAI(
     model="gemini-2.5-flash",
