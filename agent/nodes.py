@@ -291,7 +291,8 @@ def sql_generation_agent(state: AgentState) -> dict:
     metrics_requested = state.get('metrics_requested', [])
     time_range = state.get('time_range')
     
-    prompt = f"""You are a SQL expert for a pharma commercial analytics database. Generate a SQL query to answer the user's question.
+    prompt = f"""
+You are a SQL expert specializing in pharma commercial analytics databases. Your task is to generate a **valid PostgreSQL SELECT query** that accurately answers the user's question.
 
 USER QUERY: {state['user_query']}
 
@@ -307,99 +308,27 @@ PARSED INTENT:
 {METRIC_GUIDE}
 
 INSTRUCTIONS:
-1. Generate a VALID PostgreSQL SELECT query
-2. Use appropriate JOINs to connect tables
-3. Filter for is_active = true when querying models
-4. Use data_split = 'test' for performance metrics unless specified
-5. Use latest_model_executions view for most recent execution
-6. Handle NULL values appropriately
-7. Use ILIKE for case-insensitive string matching
-8. Order results meaningfully
-9. Limit results to reasonable numbers (e.g., LIMIT 100)
+1. Generate a **valid PostgreSQL SELECT query** only.
+2. Use appropriate **JOINs** to connect related tables.
+3. Always **filter models with `is_active = true`**.
+4. Use **`data_split = 'test'`** for performance metrics unless the user specifies otherwise.
+5. Use the **`latest_model_executions` view** to retrieve the most recent model execution.
+6. Handle **NULL values** appropriately.
+7. Use **ILIKE** for all case-insensitive string comparisons.
+8. Apply **meaningful ordering** for results.
+9. Limit results to a **reasonable size** (e.g., `LIMIT 100`).
 
-COMMON PATTERNS:
+IMPORTANT – Fuzzy Matching for Model Names:
+- Use partial matches, e.g.:
+  - `ILIKE '%random forest%'` instead of `= 'Random Forest'`
+  - `ILIKE '%xgboost%'` or `ILIKE '%xgb%'`
+  - `ILIKE '%lightgbm%'` or `ILIKE '%lgb%'`
 
-For ENSEMBLE VS BASE COMPARISON:
+Example:
 ```sql
-SELECT * FROM ensemble_vs_base_performance 
-WHERE model_name ILIKE '%ensemble_name%';
-
-SELECT 
-    m.model_name,
-    m.model_type,
-    pm.metric_name,
-    pm.metric_value
-FROM models m
-JOIN latest_model_executions lme ON m.model_id = lme.model_id
-JOIN performance_metrics pm ON lme.execution_id = pm.execution_id
-WHERE m.model_name IN ('ensemble_name', 'base_model_1', 'base_model_2')
-  AND pm.data_split = 'test'
-  AND pm.metric_name IN ('rmse', 'r2_score')
-ORDER BY m.model_type, pm.metric_name;
-```
-
-For FEATURE IMPORTANCE:
-```sql
-SELECT 
-    fi.feature_name,
-    fi.importance_score,
-    fi.importance_type,
-    fi.rank
-FROM models m
-JOIN latest_model_executions lme ON m.model_id = lme.model_id
-JOIN feature_importance fi ON lme.execution_id = fi.execution_id
-WHERE m.model_name ILIKE '%model_name%'
-ORDER BY fi.rank
-LIMIT 20;
-```
-
-For DRIFT DETECTION:
-```sql
-SELECT 
-    m.model_name,
-    me.drift_detected,
-    me.drift_score,
-    me.execution_timestamp
-FROM models m
-JOIN model_executions me ON m.model_id = me.model_id
-WHERE m.model_name ILIKE '%model_name%'
-  AND me.execution_status = 'success'
-ORDER BY me.execution_timestamp DESC
-LIMIT 10;
-```
-
-For MODEL SEARCH:
-```sql
-SELECT 
-    model_id,
-    model_name,
-    model_type,
-    algorithm,
-    use_case,
-    version,
-    description
-FROM models
-WHERE is_active = true
-  AND (model_name ILIKE '%search_term%' 
-       OR algorithm ILIKE '%search_term%'
-       OR description ILIKE '%search_term%')
-ORDER BY created_at DESC
-LIMIT 50;
-```
-
-For VERSION COMPARISON:
-```sql
-SELECT 
-    vc.*,
-    m.model_name
-FROM version_comparisons vc
-JOIN models m ON vc.model_id = m.model_id
-WHERE m.model_name ILIKE '%model_name%'
-  AND vc.old_version = 'v1.0'
-  AND vc.new_version = 'v2.0';
-```
-
-Generate the SQL query now. Make sure it's a valid SELECT statement."""
+WHERE (m.model_name ILIKE '%random forest%' OR m.algorithm ILIKE '%random forest%')
+  AND m.use_case ILIKE '%nrx%'
+"""
 
     try:
         structured_llm = llm.with_structured_output(SQLQuerySpec)
