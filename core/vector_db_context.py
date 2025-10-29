@@ -1,1424 +1,2237 @@
-- ROI: Estimated 2-3x over 12 months
-        - Decision: Implement
-        
-        ## Feature Importance Changes Over Time
-        
-        **Why Rankings Change**:
-        - Market dynamics shift (competitor launches)
-        - Product lifecycle stage (launch vs mature)
-        - Seasonal patterns (flu season changes drivers)
-        - Strategic shifts (increased promotional intensity)
-        - External events (guideline updates, safety warnings)
-        
-        **What to Monitor**:
-        - Major rank changes (>5 positions) signal market shifts
-        - New features entering top 10: Emerging patterns
-        - Previously important features dropping: Declining relevance
-        - Importance score changes: Strength of relationship changing
-        
-        **Example Drift Signal**:
-        "competitor_market_share" jumped from rank 12 to rank 3
-        → Diagnosis: Competitive pressure increased dramatically
-        → Investigation: Check for new competitor launches, aggressive campaigns
-        → Action: Respond with competitive messaging, increase share-of-voice
-        
-        ## Common Mistakes in Feature Interpretation
-        
-        **Mistake 1: Confusing Prediction with Causation**
-        - Feature important ≠ Feature causes outcome
-        - Example: "hcp_age" may be important because it correlates with specialty
-        - Fix: Use domain knowledge to assess causal plausibility
-        
-        **Mistake 2: Ignoring Correlated Features**
-        - If call_frequency and email_frequency are highly correlated (0.9+)
-        - Model may arbitrarily choose one as "important"
-        - Reality: Both contribute, but model can't separate them
-        - Fix: Look at combined "promotional_intensity" rather than individual channels
-        
-        **Mistake 3: Focusing Only on Top Feature**
-        - Top feature is important, but not the whole story
-        - Multiple features work together
-        - Fix: Consider top 10-20 features, look for interactions
-        
-        **Mistake 4: Treating All Importance Types as Equal**
-        - Gain importance ≠ Permutation importance ≠ SHAP
-        - Each measures different aspect
-        - Fix: Use multiple importance methods, triangulate insights
-        
-        **Mistake 5: Ignoring Non-Actionable Features**
-        - Spending time on features you can't control
-        - Example: Deep analysis of "hcp_years_in_practice" (can't change it)
-        - Fix: Focus analysis on actionable features for business recommendations
-        """,
-        "tags": ["feature_importance", "drivers", "interpretability", "actionable_insights", "SHAP", "business_translation"],
-        "use_cases": ["feature_importance_analysis", "NRx_forecasting", "HCP_engagement", "messaging_optimization"]
-    },
-    
-    # Document 5: Model Drift and Performance Monitoring
-    {
-        "id": "domain_model_drift_001",
-        "category": "domain_knowledge",
-        "subcategory": "model_monitoring",
-        "title": "Model Drift Detection and Performance Degradation",
-        "content": """
-        Model drift occurs when a model's performance degrades over time due to changes in
-        underlying patterns. In pharmaceutical commercial analytics, markets evolve rapidly,
-        making drift detection critical for maintaining prediction accuracy.
-        
-        ## Why Models Drift in Pharma
-        
-        **Markets Are Dynamic**:
-        - Competitor launches change prescribing landscape (every 6-12 months)
-        - Generic entry causes catastrophic brand erosion (overnight changes)
-        - Clinical guidelines update (annual or ad-hoc)
-        - Safety warnings emerge (sudden, unpredictable)
-        - Formulary changes (quarterly or annual)
-        - HCP demographics shift (annual residency cohorts)
-        
-        **Models Are Static**:
-        - Trained on historical patterns (6-24 months of data)
-        - Assume relationships remain constant
-        - Can't adapt automatically to new patterns
-        - Require periodic retraining to stay current
-        
-        ## Types of Drift
-        
-        **1. Concept Drift** (Relationship Changes):
-        
-        Definition: The relationship between features (X) and target (Y) changes
-        
-        Pharma Examples:
-        - New competitor launch → promotional effectiveness decreases
-        - Generic entry → brand prescribing plummets regardless of promotion
-        - Guideline change → specialty prescribing patterns shift
-        - Formulary restriction → price sensitivity increases
-        
-        Detection Signals:
-        - Feature distributions stable (PSI < 0.1)
-        - BUT model performance degrades significantly
-        - Feature importance rankings change dramatically
-        - Coefficients/patterns in model differ from baseline
-        
-        Business Impact:
-        "Model says call this HCP 4 times, but now they're non-responsive due to competitor"
-        → Wasted promotional spend, missed opportunities elsewhere
-        
-        **2. Data Drift** (Feature Distribution Changes):
-        
-        Definition: The distribution of input features (X) changes
-        
-        Pharma Examples:
-        - HCP demographics shift (younger physicians entering, older retiring)
-        - Territory realignment changes geographic distribution
-        - Sales force reorganization alters call frequency patterns
-        - Data quality issues (system migration, missing values)
-        
-        Detection Signals:
-        - PSI (Population Stability Index) > 0.25 for key features
-        - Feature means, standard deviations shift significantly
-        - New categories appear (new specialties, geographies)
-        - Missing values increase
-        
-        Business Impact:
-        "Model trained on experienced HCPs, now many are new graduates who prescribe differently"
-        → Predictions systematically biased for new demographic segments
-        
-        **3. Performance Drift** (Accuracy Decline):
-        
-        Definition: Model accuracy degrades over time
-        
-        Pharma Examples:
-        - RMSE increases from 10.0 to 12.5 (25% degradation)
-        - R² decreases from 0.75 to 0.65
-        - Prediction errors grow consistently over quarters
-        
-        Usually caused by combination of concept drift + data drift
-        
-        **4. Prediction Drift** (Output Distribution Changes):
-        
-        Definition: Distribution of model predictions shifts
-        
-        Pharma Examples:
-        - Mean predicted NRx drops from 50 to 40 (but actuals unchanged)
-        - Prediction variance increases (model less confident)
-        - Model consistently over-predicts or under-predicts
-        
-        Detection Signals:
-        - Track prediction distribution statistics over time
-        - Compare predicted vs actual distributions
-        - Monitor calibration (predicted probabilities match observed rates)
-        
-        ## Drift Severity Classification
-        
-        **Minor Drift** (5-10% performance degradation):
-        - Impact: Slightly reduced accuracy, still usable
-        - Action: Monitor closely, schedule retraining in 1-2 months
-        - Business risk: Low, tactical adjustments can compensate
-        - Example: RMSE 10.0 → 10.7
-        
-        **Moderate Drift** (10-20% performance degradation):
-        - Impact: Noticeably worse predictions, targeting suboptimal
-        - Action: Plan retraining within 2-4 weeks
-        - Business risk: Medium, some wasted spend and missed opportunities
-        - Example: RMSE 10.0 → 11.5
-        
-        **Severe Drift** (>20% performance degradation):
-        - Impact: Model unreliable, predictions misleading
-        - Action: Immediate emergency retraining required
-        - Business risk: High, significant revenue at stake
-        - Example: RMSE 10.0 → 13.0
-        - Business cost: Can represent $5-15M annual forecast error
-        
-        ## Root Cause Analysis Framework
-        
-        **Step 1: Quantify Degradation**
-        - Compare current performance to baseline (6-12 months ago)
-        - Calculate percentage change in key metrics (RMSE, MAE, R²)
-        - Identify when degradation started (gradual or sudden?)
-        
-        **Step 2: Check for Concept Drift**
-        - Compare feature importance: current vs baseline
-        - Analyze residual patterns (systematic over/under prediction?)
-        - Review feature distributions (stable = concept drift likely)
-        - Check external events (competitor launches, guidelines, formulary)
-        
-        **Step 3: Check for Data Drift**
-        - Calculate PSI for each feature
-        - Identify features with PSI > 0.25 (significant shift)
-        - Investigate: Why did distribution change?
-        - Data quality: Missing values, system changes?
-        
-        **Step 4: Segment Analysis**
-        - Does drift affect all HCP tiers equally?
-        - Is drift concentrated in specific geographies?
-        - Which specialties show most degradation?
-        - Urban vs rural differences?
-        
-        This reveals: Is drift market-wide or segment-specific?
-        
-        **Step 5: External Event Investigation**
-        - Review market timeline: What happened in drift period?
-        - Competitor activity: Launches, campaigns, pricing
-        - Regulatory: Formulary updates, prior auth changes
-        - Clinical: New studies, safety warnings, guideline updates
-        - Operational: Sales force changes, territory realignment
-        
-        ## Business Impact Quantification
-        
-        **Framework**:
-        Forecast Error Impact = (RMSE_increase) × (# HCPs) × (Revenue per Rx) × (Periods per year)
-        
-        **Example Calculation**:
-        - RMSE increased from 10 to 12.5 NRx (+2.5)
-        - Forecasting 10,000 HCPs monthly
-        - Revenue: $50 per Rx
-        - Impact: 2.5 NRx × 10,000 HCPs × $50 × 12 months = $15M annual error
-        
-        **Operational Impacts**:
-        - Inventory: Over-forecast → waste, under-forecast → stockouts
-        - Sales force: Mis-targeted HCPs → wasted calls, missed opportunities
-        - Marketing: Budget allocated to wrong campaigns/channels
-        - Planning: Unrealistic quotas, poor territory alignment
-        
-        ## Remediation Strategies
-        
-        **Quick Fixes** (1-2 weeks):
-        - Recalibration: Adjust prediction scale without full retraining
-        - Feature updates: Add recent competitor activity data
-        - Segment models: Separate models for drifted vs stable segments
-        - Ensemble reweighting: If using ensemble, adjust base model weights
-        
-        **Full Retraining** (2-4 weeks):
-        - Expand training data: Include recent periods showing new patterns
-        - Feature engineering: Add features capturing market changes
-        - Algorithm change: Switch to more adaptive algorithm if needed
-        - Validation: Extensive testing on recent data before deployment
-        
-        **Architectural Changes** (1-3 months):
-        - Online learning: Model updates continuously with new data
-        - Drift detection system: Automated monitoring and alerts
-        - Concept drift algorithms: Models designed to adapt to change
-        - Modular approach: Separate models for stable vs volatile segments
-        
-        ## Prevention Best Practices
-        
-        **Proactive Monitoring**:
-        - Weekly performance checks (RMSE, MAE, R²)
-        - Monthly drift analysis (PSI, feature importance)
-        - Quarterly retraining schedule (don't wait for drift)
-        - Automated alerts (10% degradation threshold)
-        
-        **Business Event Tracking**:
-        - Maintain competitor launch calendar
-        - Track formulary change schedule
-        - Monitor clinical guideline updates
-        - Log safety warnings, regulatory changes
-        - Correlate events with model performance
-        
-        **Segment-Level Monitoring**:
-        - Don't just track overall performance
-        - Monitor by HCP tier, specialty, geography
-        - Detect segment-specific drift early
-        - Enables targeted remediation
-        
-        **Model Versioning**:
-        - Keep historical model versions
-        - Track performance over time
-        - Enable rollback if new model worse
-        - A/B test new vs old model before full deployment
-        
-        ## Retraining Decision Framework
-        
-        **When to Retrain**:
-        
-        Time-based triggers:
-        - Quarterly retraining (proactive, prevents drift)
-        - After major market events (competitor launch, generic entry)
-        - Annual comprehensive refresh
-        
-        Performance-based triggers:
-        - 10% degradation: Plan retraining within month
-        - 15% degradation: Urgent retraining within 2 weeks
-        - 20%+ degradation: Emergency retraining immediately
-        
-        Business event triggers:
-        - Major competitor launch: Retrain within 1 month
-        - Generic entry: Retrain immediately (market transformed)
-        - Guideline change: Retrain within 2 months
-        - Sales force reorganization: Retrain after stabilization (2-3 months)
-        
-        **Cost-Benefit Analysis**:
-        
-        Retraining costs:
-        - Data science time: 40-120 hours ($6K-$18K)
-        - Compute resources: $2K-$10K
-        - Testing and validation: $3K-$8K
-        - Deployment: $2K-$5K
-        - Total: $13K-$41K typical
-        
-        Benefits of fixing 20% degradation:
-        - Restore forecast accuracy: $10M-$20M impact
-        - Conservative capture: 50% of potential = $5M-$10M
-        - ROI: 200-700x
-        
-        Decision: Almost always retrain when degradation >10%
-        
-        ## Communicating Drift to Stakeholders
-        
-        **Framework**:
-        1. Quantify performance change (numbers stakeholders understand)
-        2. Explain root cause in business terms (not technical jargon)
-        3. Estimate business impact (revenue, costs, missed opportunities)
-        4. Present remediation plan with timeline
-        5. Show ROI of fixing vs ignoring
-        6. Request resources/approval if needed
-        
-        **Example Message**:
-        "Our NRx forecasting model has experienced 18% accuracy degradation over the past
-        3 months (RMSE increased from 10 to 11.8). Root cause analysis indicates this is
-        due to the competitor launch in March, which changed the relationship between our
-        promotional activities and HCP prescribing behavior.
-        
-        Business impact: $8M annual forecast error, leading to suboptimal targeting and
-        wasted promotional spend estimated at $2M.
-        
-        Recommended action: Emergency retraining within 2 weeks, incorporating competitor
-        activity features and recent data showing new market dynamics. Cost: $25K.
-        Expected benefit: Restore 75% of lost accuracy = $6M annual value. ROI: 240x.
-        
-        Request: Approval for immediate retraining and resources (80 hours data science time)."
-        """,
-        "tags": ["model_drift", "monitoring", "performance_degradation", "concept_drift", "data_drift", "retraining", "PSI"],
-        "use_cases": ["model_drift_detection", "NRx_forecasting", "HCP_engagement"]
-    },
-    
-    # Document 6: Ensemble Methods
-    {
-        "id": "domain_ensemble_methods_001",
-        "category": "domain_knowledge",
-        "subcategory": "ensemble_modeling",
-        "title": "Ensemble Methods and Model Combination Strategies",
-        "content": """
-        Ensemble models combine predictions from multiple base models to achieve better
-        performance than any individual model. In pharmaceutical analytics, ensembles are
-        particularly valuable due to complex, noisy data and high business stakes.
-        
-        ## Why Ensembles Work
-        
-        **The Wisdom of Crowds Principle**:
-        - Multiple models make different errors
-        - Averaging reduces random error (variance)
-        - Combination can reduce systematic error (bias)
-        - Result: More stable, accurate predictions
-        
-        **The Diversity Requirement**:
-        - Benefit is proportional to model diversity
-        - If all models identical → no ensemble advantage
-        - If models very different → maximum ensemble benefit
-        - Goal: Diverse algorithms, features, or training approaches
-        
-        ## Ensemble Types
-        
-        **1. Bagging (Bootstrap Aggregating)**:
-        
-        Mechanism:
-        - Train multiple models on different random samples of data
-        - Each model sees slightly different view of patterns
-        - Average predictions across all models
-        
-        Example: Random Forest (ensemble of decision trees)
-        
-        Strengths:
-        - Reduces variance (smooths out overfitting)
-        - Robust to outliers
-        - Parallel training (fast)
-        
-        Pharma Application:
-        - NRx forecasting: Multiple models on different HCP subsamples
-        - Handles noisy data well (common in pharma)
-        - Good for high-variance base models
-        
-        Typical Improvement: 10-20% RMSE reduction vs single tree
-        
-        **2. Boosting**:
-        
-        Mechanism:
-        - Train models sequentially
-        - Each new model focuses on errors of previous models
-        - Weighted combination (better models get more weight)
-        
-        Examples: XGBoost, LightGBM, AdaBoost
-        
-        Strengths:
-        - Reduces bias (captures subtle patterns)
-        - Excellent predictive performance
-        - Handles complex interactions
-        
-        Pharma Application:
-        - HCP engagement prediction: Complex interaction patterns
-        - Feature importance analysis: Identifies subtle drivers
-        - Best for achieving maximum accuracy
-        
-        Typical Improvement: 15-30% RMSE reduction vs linear models
-        
-        **3. Stacking (Stacked Generalization)**:
-        
-        Mechanism:
-        - Train diverse base models (Random Forest, XGBoost, Logistic Regression)
-        - Use base model predictions as features for meta-learner
-        - Meta-learner learns optimal combination
-        
-        Example Architecture:
-        - Layer 1: Random Forest + XGBoost + Neural Network
-        - Layer 2: Linear Regression or Ridge Regression (meta-learner)
-        
-        Strengths:
-        - Combines strengths of different algorithm types
-        - Meta-learner optimizes weights automatically
-        - Maximum potential for improvement
-        
-        Pharma Application:
-        - High-stakes forecasting (launch forecasts)
-        - When maximum accuracy justifies complexity
-        - Combines interpretable + black-box models
-        
-        Typical Improvement: 5-15% beyond best base model
-        
-        **4. Blending**:
-        
-        Mechanism:
-        - Similar to stacking but simpler
-        - Train base models on training data
-        - Train meta-learner on holdout validation set
-        - Less prone to overfitting than stacking
-        
-        Pharma Application:
-        - When training data limited (small therapeutic areas)
-        - Simpler alternative to full stacking
-        - Good for production deployment (less complex)
-        
-        **5. Voting/Averaging**:
-        
-        Mechanism:
-        - Simple average (regression) or majority vote (classification)
-        - No meta-learner, just combine predictions directly
-        - Can use weighted average based on validation performance
-        
-        Pharma Application:
-        - Quick ensemble for proof-of-concept
-        - When interpretability matters (simple to explain)
-        - Baseline ensemble approach
-        
-        Typical Improvement: 3-8% vs best base model
-        
-        ## Designing Effective Ensembles
-        
-        **Base Model Selection**:
-        
-        Goal: Maximum diversity while maintaining quality
-        
-        Good Combinations:
-        - Linear + Tree-based + Neural Network
-          (Different inductive biases)
-        - Random Forest + XGBoost + LightGBM
-          (Different tree-building strategies)
-        - Logistic Regression + SVM + Random Forest
-          (Linear + nonlinear combinations)
-        
-        Poor Combinations:
-        - Multiple Random Forests with similar hyperparameters (too similar)
-        - Multiple linear models (all capture same patterns)
-        - Many weak models (garbage in, garbage out)
-        
-        **Number of Base Models**:
-        - 2-3 models: Good starting point, easy to explain
-        - 4-5 models: Typical sweet spot (diminishing returns after)
-        - 10+ models: Usually marginal improvement, high complexity
-        
-        Rule of thumb: Stop adding models when improvement <2%
-        
-        **Meta-Learner Choice**:
-        
-        For stacking ensembles:
-        - Simple meta-learner (Linear/Ridge Regression): Prevents overfitting
-        - Complex meta-learner (Neural Network): Risks overfitting to base predictions
-        
-        Recommendation: Start simple, only increase complexity if needed
-        
-        ## Ensemble Performance Analysis
-        
-        **Comparing Ensemble to Base Models**:
-        
-        Metrics to Compare:
-        - RMSE/MAE: Is ensemble more accurate?
-        - R²: Does ensemble explain more variance?
-        - Improvement %: (Base_RMSE - Ensemble_RMSE) / Base_RMSE × 100
-        - Consistency: Is ensemble better across all segments?
-        
-        **Example Analysis**:
-        - Random Forest: RMSE = 10.5
-        - XGBoost: RMSE = 10.2
-        - LightGBM: RMSE = 10.8
-        - Average Base: RMSE = 10.5
-        - Ensemble: RMSE = 9.8
-        - Improvement: (10.5 - 9.8) / 10.5 = 6.7%
-        
-        Questions to Answer:
-        1. Is 6.7% improvement significant? (Usually yes if >5%)
-        2. Does improvement justify added complexity? (Cost-benefit analysis)
-        3. Is improvement consistent across HCP tiers? (Check segments)
-        4. Which base models contribute most? (Analyze weights/importance)
-        
-        ## When Ensembles Underperform
-        
-        **Warning Signs**:
-        
-        1. **High Base Model Correlation** (>0.95):
-        - Models make same errors
-        - Little diversity benefit
-        - Fix: Add more diverse algorithms or features
-        
-        2. **Overfitting Meta-Learner**:
-        - Ensemble great on validation, poor on test
-        - Meta-learner memorized base predictions
-        - Fix: Use simpler meta-learner (Linear Regression), add regularization
-        
-        3. **Poor Base Model Selection**:
-        - Including very weak models (much worse than others)
-        - Weak models drag down ensemble
-        - Fix: Pre-screen base models, only include strong performers
-        
-        4. **Data Leakage**:
-        - Base models trained on same data as meta-learner
-        - Artificially inflated performance
-        - Fix: Strict train/validation/test splits, use cross-validation
-        
-        5. **Model Saturation**:
-        - Already at theoretical performance limit
-        - No room for improvement
-        - Fix: Accept that ensemble can't help, focus on feature engineering
-        
-        ## Business Value Assessment
-        
-        **Cost of Ensemble Complexity**:
-        - Training time: 3-5x longer than single model
-        - Compute resources: 2-4x higher costs
-        - Maintenance: More models to monitor and retrain
-        - Explainability: Harder to interpret (black box)
-        - Deployment: More complex infrastructure
-        
-        Annual Complexity Cost: $5K-$15K typically
-        
-        **Benefit Calculation**:
-        
-        Example: NRx Forecasting Ensemble
-        - 6.7% RMSE improvement (10.5 → 9.8)
-        - 10,000 HCPs forecasted monthly
-        - Error reduction: 0.7 NRx per HCP per month
-        - Annual: 0.7 × 10,000 × 12 = 84,000 fewer prescription errors
-        - Value: 84,000 × $50 = $4.2M
-        - Complexity cost: $10K
-        - ROI: 420x
-        
-        Decision: Strongly justified
-        
-        **When to Use Ensemble**:
-        - High-stakes decisions ($10M+ revenue impact)
-        - Accuracy improvement >5% vs best base model
-        - Diminishing returns not yet reached
-        - Resources available for complexity
-        
-        **When to Use Single Model**:
-        - Exploratory analysis (speed matters)
-        - Interpretability critical (stakeholder requirement)
-        - Improvement <3% (not worth complexity)
-        - Limited computational resources
-        - Proof-of-concept phase
-        
-        ## Ensemble-Specific Insights
-        
-        **Feature Importance from Ensembles**:
-        
-        Ensembles can reveal patterns missed by individual models:
-        - Feature interactions: Ensemble identifies synergies
-        - Robust drivers: Features important across all base models
-        - Ensemble-unique features: Meta-learner discovers new patterns
-        
-        Example:
-        "Random Forest ranks 'patient_volume' as #5, XGBoost ranks it #8, but ensemble
-        ranks it #3. This suggests the interaction between patient_volume and other features
-        is critical, which the ensemble meta-learner discovered."
-        
-        **Segment Performance**:
-        
-        Check if ensemble advantage consistent:
-        - TIER_1 HCPs: Ensemble RMSE 8.5 vs Base 9.2 (7.6% improvement)
-        - TIER_2 HCPs: Ensemble RMSE 9.8 vs Base 10.5 (6.7% improvement)
-        - TIER_3 HCPs: Ensemble RMSE 11.2 vs Base 11.5 (2.6% improvement)
-        
-        Insight: Ensemble especially valuable for high-volume HCPs (where accuracy matters most)
-        
-        ## Communicating Ensemble Value
-        
-        **To Technical Stakeholders**:
-        - Show performance metrics (RMSE, R², improvement %)
-        - Explain algorithmic diversity and combination strategy
-        - Present ablation analysis (removing each base model's impact)
-        - Discuss bias-variance tradeoff
-        
-        **To Business Stakeholders**:
-        - Translate accuracy improvement to revenue impact
-        - Use analogy: "Like getting second and third opinions from doctors"
-        - Emphasize risk reduction (more stable predictions)
-        - Show ROI calculation (benefit vs complexity cost)
-        - Avoid technical jargon (no mention of meta-learners, stacking)
-        
-        **Example Message**:
-        "The ensemble model combines three complementary prediction approaches: Random Forest
-        (handles outliers well), XGBoost (captures subtle patterns), and Linear Regression
-        (provides interpretable baseline). By learning from all three, the ensemble achieves
-        6.7% better accuracy than any single approach.
-        
-        Business impact: This improvement translates to $4.2M better forecast accuracy annually,
-        enabling more precise HCP targeting and resource allocation. The additional complexity
-        costs $10K annually but delivers 420x ROI. Recommend deployment to production."
-        """,
-        "tags": ["ensemble", "stacking", "boosting", "bagging", "model_combination", "accuracy", "complexity"],
-        "use_cases": ["NRx_forecasting", "HCP_engagement", "feature_importance_analysis"]
-    },
-    
-    # Document 7: Uplift Modeling
-    {
-        "id": "domain_uplift_modeling_001",
-        "category": "domain_knowledge",
-        "subcategory": "uplift_modeling",
-        "title": "Uplift Modeling and Incremental Impact Measurement",
-        "content": """
-        Uplift modeling predicts the INCREMENTAL impact of an intervention (promotion, campaign)
-        on an individual's behavior. Unlike traditional response modeling which predicts WHO will
-        respond, uplift modeling predicts who will respond BECAUSE of the intervention.
-        
-        This is the difference between correlation and causation in targeting.
-        
-        ## The Core Problem
-        
-        **Traditional Response Modeling Question**: "Will this HCP increase prescriptions?"
-        
-        Problem: Some HCPs would increase anyway (without promotion)
-        → Wastes resources on "sure things"
-        
-        **Uplift Modeling Question**: "Will this HCP increase prescriptions MORE if promoted?"
-        
-        Focus: Incremental lift from promotion
-        → Targets only HCPs influenced by promotion
-        
-        ## The Four Customer Segments
-        
-        **1. Persuadables** (20-30% typically):
-        - Will respond ONLY if treated
-        - Positive uplift: Treatment causes behavior change
-        - **TARGET THESE** → Maximum ROI
-        
-        Example HCP:
-        - Currently prescribes 10 NRx/month
-        - If promoted: 25 NRx/month
-        - If not promoted: 10 NRx/month
-        - Uplift: +15 NRx (worth targeting!)
-        
-        **2. Sure Things** (10-20% typically):
-        - Will respond regardless of treatment
-        - Zero uplift: Would prescribe anyway
-        - **AVOID** → Wasted promotion spend
-        
-        Example HCP:
-        - Currently prescribes 50 NRx/month
-        - If promoted: 55 NRx/month
-        - If not promoted: 53 NRx/month
-        - Uplift: +2 NRx (not worth $200 call cost)
-        
-        **3. Lost Causes** (40-50% typically):
-        - Won't respond regardless of treatment
-        - Zero uplift: Unpersuadable
-        - **AVOID** → Wasted effort
-        
-        Example HCP:
-        - Currently prescribes 0 NRx/month
-        - If promoted: 0 NRx/month
-        - If not promoted: 0 NRx/month
-        - Uplift: 0 (competitor loyalist, formulary blocker, etc.)
-        
-        **4. Do Not Disturbs/Sleeping Dogs** (<5% typically):
-        - Negative response if treated
-        - Negative uplift: Promotion backfires
-        - **DEFINITELY AVOID** → Harmful to promote
-        
-        Example HCP:
-        - Currently prescribes 10 NRx/month
-        - If promoted: 3 NRx/month (promotion annoys them)
-        - If not promoted: 10 NRx/month
-        - Uplift: -7 NRx (promotion causes opt-out)
-        
-        ## Why Uplift Modeling Matters
-        
-        **Traditional Targeting Results**:
-        - Email 10,000 HCPs
-        - 2,000 respond (20% response rate)
-        - Cost: $5,000
-        - Revenue: 2,000 × 5 NRx × $50 = $500K
-        - ROI: 100x (looks great!)
-        
-        **But Reality Check** (with uplift lens):
-        - 400 are persuadables (truly influenced)
-        - 1,600 are "sure things" (would prescribe anyway)
-        - True incremental: 400 × 5 NRx × $50 = $100K
-        - Actual ROI: 20x (still good, but 80% less than calculated)
-        
-        **Uplift-Optimized Targeting**:
-        - Target only 2,000 persuadables (from uplift model)
-        - 800 respond (40% response rate among persuadables)
-        - Cost: $1,000 (80% savings)
-        - Revenue: 800 × 5 NRx × $50 = $200K (100% incremental)
-        - ROI: 200x (truly measured incremental impact)
-        
-        **Key Insight**: Uplift modeling can double or triple marketing ROI by avoiding waste
-        on sure things and lost causes.
-        
-        ## Measurement Challenges
-        
-        **The Fundamental Problem**:
-        - Can only observe ONE outcome per HCP (promoted or not promoted)
-        - Cannot see counterfactual (what would have happened otherwise)
-        - Need to estimate incremental effect from observed data
-        
-        **Gold Standard: Randomized Controlled Trial (RCT)**:
-        - Randomly assign HCPs to treatment vs control
-        - Treatment: Receive promotion
-        - Control: No promotion
-        - Compare outcomes between groups
-        - Difference = Average Treatment Effect (ATE)
-        
-        Advantages:
-        - Causality clearly established
-        - Unbiased uplift estimates
-        - Gold standard for evidence
-        
-        Disadvantages:
-        - Expensive (need large samples)
-        - Time-consuming (3-6 months)
-        - Business resistance ("Why give control group nothing?")
-        - Ethical concerns (withholding potential benefit)
-        
-        **Observational Approaches** (when RCT not feasible):
-        
-        1. Propensity Score Matching:
-           - Match treated HCPs to similar untreated HCPs
-           - Compare outcomes between matched pairs
-           - Approximates RCT if matching good
-        
-        2. Difference-in-Differences:
-           - Compare before/after for treated vs control
-           - Controls for time trends
-           - Assumes parallel trends (often violated)
-        
-        3. Instrumental Variables:
-           - Find variable that affects treatment but not outcome directly
-           - Use to isolate causal effect
-           - Hard to find valid instruments
-        
-        4. Machine Learning Uplift Models:
-           - Two-model approach: Model treatment and control separately"""
-Comprehensive Domain Knowledge and Business Context for Vector Database
-Focus: Pharmaceutical commercial analytics domain expertise, industry knowledge,
-business reasoning patterns, and interpretive frameworks.
+"""
+Vector Database Context Documents for Pharma Commercial Analytics
 
-NO SQL - SQL patterns belong in schema_context.py
-This file contains ONLY business/domain knowledge for semantic retrieval.
+This module contains structured knowledge documents to be embedded and stored
+in a vector database for semantic retrieval during query processing.
+
+Each document is structured with:
+- doc_id: Unique identifier
+- category: Document category for filtering
+- title: Document title
+- content: Main content for embedding
+- metadata: Additional structured information
+- keywords: Key terms for hybrid search
 """
 
-# =============================================================================
-# PHARMACEUTICAL COMMERCIAL ANALYTICS DOMAIN KNOWLEDGE
-# =============================================================================
+VECTOR_DB_DOCUMENTS = [
+    
+    # ========================================================================
+    # CATEGORY: USE CASES
+    # ========================================================================
+    
+    {
+        "doc_id": "UC001",
+        "category": "use_case",
+        "title": "NRx Forecasting Use Case",
+        "content": """
+        NRx (New Prescription) Forecasting predicts the number of new prescriptions 
+        that Healthcare Providers (HCPs) will write for a pharmaceutical product.
+        
+        Business Context:
+        - NRx is a leading indicator of market adoption and HCP behavior change
+        - Different from TRx (Total Prescriptions = New + Refills)
+        - Critical for launch planning and resource allocation
+        - Typically forecasted monthly or quarterly by HCP, territory, or segment
+        
+        Typical Models Used:
+        - Base models: Random Forest, XGBoost, LightGBM (gradient boosting)
+        - Ensemble approach: Stacking with meta-learner combining multiple base models
+        - Time series components may be incorporated
+        
+        Key Features:
+        - HCP specialty, prescribing history, patient volume
+        - Historical prescription trends (past 6-12 months)
+        - Marketing touchpoints (calls, emails, events, samples)
+        - Competitive intelligence and market share
+        - Geographic and demographic factors
+        - Seasonal patterns
+        
+        Success Metrics:
+        - RMSE (Root Mean Squared Error) - lower is better
+        - MAE (Mean Absolute Error) - lower is better
+        - R² Score - higher is better (0-1 range)
+        - MAPE (Mean Absolute Percentage Error) for interpretability
+        
+        Business Impact:
+        - Accurate forecasts drive field force allocation
+        - Identify high-potential HCPs for targeting
+        - Optimize marketing spend and sample distribution
+        - Track launch trajectory vs. plan
+        """,
+        "metadata": {
+            "typical_algorithms": ["Random Forest", "XGBoost", "LightGBM"],
+            "ensemble_types": ["stacking", "boosting", "meta_learning"],
+            "key_metrics": ["RMSE", "MAE", "R2", "MAPE"],
+            "prediction_target": "new_prescriptions",
+            "typical_features": ["hcp_specialty", "prescribing_history", "marketing_touches", "patient_volume"]
+        },
+        "keywords": ["NRx", "new prescriptions", "forecasting", "HCP behavior", "launch planning"]
+    },
+    
+    {
+        "doc_id": "UC002",
+        "category": "use_case",
+        "title": "HCP Response & Engagement Prediction",
+        "content": """
+        HCP Response Prediction models forecast how Healthcare Providers will respond 
+        to marketing messages, campaigns, and promotional activities.
+        
+        Business Context:
+        - Predicts likelihood of HCP engagement (email open, call acceptance, event attendance)
+        - Forecasts prescription behavior change following promotional activity
+        - Enables personalized messaging and channel optimization
+        - Critical for maximizing marketing ROI and field force efficiency
+        
+        Typical Models Used:
+        - Base models: Logistic Regression, SVM, Neural Networks, Decision Trees
+        - Ensemble approach: Stacking of classification models
+        - May include uplift modeling to predict incremental impact
+        
+        Key Features:
+        - HCP engagement history (past responses to campaigns)
+        - Channel preferences (email vs call vs event)
+        - Prescribing patterns and brand loyalty
+        - HCP demographics (age, years in practice, practice size)
+        - Competitive messaging exposure
+        - Timing and frequency of outreach
+        - Message content and creative elements
+        
+        Success Metrics:
+        - AUC-ROC (Area Under ROC Curve) - higher is better (0.5-1.0)
+        - Precision and Recall for response prediction
+        - F1 Score for balanced performance
+        - Lift and Gain charts for targeting efficiency
+        - Uplift metrics for incremental impact
+        
+        Business Impact:
+        - Optimize campaign targeting (who to contact)
+        - Personalize message content (what to say)
+        - Select best channel (how to reach them)
+        - Improve response rates and reduce waste
+        - Increase prescription lift from marketing activities
+        """,
+        "metadata": {
+            "typical_algorithms": ["Logistic Regression", "SVM", "Neural Network", "Decision Trees"],
+            "ensemble_types": ["stacking", "voting"],
+            "key_metrics": ["AUC_ROC", "Precision", "Recall", "F1", "Uplift"],
+            "prediction_target": "response_probability",
+            "typical_features": ["engagement_history", "channel_preference", "prescribing_patterns", "demographics"]
+        },
+        "keywords": ["HCP response", "engagement prediction", "campaign optimization", "personalization", "uplift modeling"]
+    },
+    
+    {
+        "doc_id": "UC003",
+        "category": "use_case",
+        "title": "Feature Importance & Driver Analysis",
+        "content": """
+        Feature Importance Analysis identifies which variables (features) have the 
+        greatest impact on model predictions and business outcomes.
+        
+        Business Context:
+        - Answers "What drives HCP prescribing behavior?"
+        - Guides marketing strategy by identifying controllable levers
+        - Helps prioritize data collection and feature engineering
+        - Validates business hypotheses about key drivers
+        - Essential for model interpretability and stakeholder trust
+        
+        Typical Models Used:
+        - Tree-based models (Random Forest, XGBoost, LightGBM) with built-in importance
+        - SHAP (SHapley Additive exPlanations) for model-agnostic interpretation
+        - Permutation importance for unbiased assessment
+        - Ensemble models reveal feature interactions and synergies
+        
+        Importance Types:
+        - Gain: Average improvement in objective function when feature is used
+        - Split: Number of times feature appears in tree splits
+        - SHAP: Contribution of each feature to individual predictions
+        - Permutation: Performance drop when feature is shuffled
+        - Weight: Feature coefficients (linear models)
+        
+        Key Insights:
+        - Ranking of features by importance score
+        - Feature interactions (how features work together)
+        - Marginal effects (impact of feature value changes)
+        - Non-linear relationships and thresholds
+        - Stability of importance across model versions
+        
+        Business Impact:
+        - Focus marketing efforts on high-impact drivers
+        - Identify uncontrollable factors (e.g., HCP specialty) vs controllable (e.g., call frequency)
+        - Optimize resource allocation across marketing tactics
+        - Validate or challenge business assumptions
+        - Provide transparency for model-driven decisions
+        """,
+        "metadata": {
+            "typical_algorithms": ["Random Forest", "XGBoost", "LightGBM"],
+            "importance_types": ["gain", "split", "shap", "permutation", "weight"],
+            "ensemble_advantage": "Reveals feature interactions and synergies",
+            "typical_outputs": ["feature_rankings", "interaction_effects", "marginal_plots"]
+        },
+        "keywords": ["feature importance", "driver analysis", "SHAP", "model interpretation", "business drivers"]
+    },
+    
+    {
+        "doc_id": "UC004",
+        "category": "use_case",
+        "title": "Model Drift Detection",
+        "content": """
+        Model Drift Detection monitors changes in model performance, data distributions, 
+        and prediction patterns over time to identify when models need retraining.
+        
+        Business Context:
+        - HCP behavior evolves (new treatments, guidelines, market dynamics)
+        - Data distributions shift (population changes, seasonality)
+        - Model performance degrades without monitoring
+        - Early detection prevents poor business decisions
+        - Critical for production ML systems
+        
+        Types of Drift:
+        1. Concept Drift: Relationship between features and target changes
+           - Example: HCP response to messaging changes due to new competitor entry
+        
+        2. Data Drift: Input feature distributions change
+           - Example: Average HCP patient volume decreases
+        
+        3. Performance Drift: Model accuracy degrades over time
+           - Example: RMSE increases from 50 to 75
+        
+        4. Prediction Drift: Output distributions shift
+           - Example: Model predicts fewer high-value HCPs than before
+        
+        Detection Methods:
+        - Statistical tests (KS test, Chi-square, PSI)
+        - Performance metric tracking over time
+        - Comparing current vs baseline execution metrics
+        - Ensemble model consensus analysis
+        
+        Key Metrics:
+        - Drift Score: Magnitude of drift (typically 0-1 scale)
+        - Threshold: When to trigger retraining (e.g., 0.10 = 10% change)
+        - Affected Features: Which variables are shifting
+        - Performance Impact: Metric degradation amount
+        
+        Business Impact:
+        - Prevent acting on stale predictions
+        - Trigger timely model retraining
+        - Maintain forecast accuracy for planning
+        - Detect market shifts early
+        - Ensure regulatory compliance (model validation)
+        """,
+        "metadata": {
+            "drift_types": ["concept_drift", "data_drift", "performance_drift", "prediction_drift"],
+            "detection_methods": ["statistical_tests", "metric_tracking", "baseline_comparison"],
+            "typical_threshold": 0.10,
+            "typical_metrics": ["drift_score", "KS_statistic", "PSI", "performance_delta"]
+        },
+        "keywords": ["model drift", "performance monitoring", "concept drift", "data drift", "retraining triggers"]
+    },
+    
+    {
+        "doc_id": "UC005",
+        "category": "use_case",
+        "title": "Next Best Action & Messaging Optimization",
+        "content": """
+        Next Best Action (NBA) models recommend the optimal marketing action for each 
+        HCP to maximize prescription lift and marketing efficiency.
+        
+        Business Context:
+        - Field force has limited time and resources
+        - Different HCPs respond to different messages and channels
+        - Goal: Maximize incremental prescriptions per marketing dollar
+        - Combines response prediction + uplift modeling + business rules
+        
+        Decision Framework:
+        - Who: Which HCPs to target (prioritization)
+        - What: Which message content and creative (personalization)
+        - How: Which channel (call, email, event, sample)
+        - When: Optimal timing and frequency
+        - Why: Expected incremental lift and ROI
+        
+        Typical Models Used:
+        - Uplift models: Predict treatment effect (treated vs control)
+        - Response models: Predict engagement likelihood
+        - Ensemble combining uplift + response + propensity models
+        - Reinforcement learning for sequential decisions
+        
+        Key Concepts:
+        - Uplift Score: Incremental lift from marketing action
+        - Control Prediction: Predicted behavior without intervention
+        - Treatment Prediction: Predicted behavior with intervention
+        - Uplift = Treatment - Control
+        - ROI: (Incremental Revenue - Cost) / Cost
+        
+        Action Prioritization:
+        - High uplift HCPs: Will respond positively to messaging
+        - Low/negative uplift HCPs: "Sleeping dogs" - don't contact
+        - Already convinced HCPs: Will prescribe regardless
+        - Lost causes: Won't prescribe no matter what
+        
+        Business Impact:
+        - Increase marketing effectiveness by 20-40%
+        - Reduce wasted spend on unresponsive HCPs
+        - Personalize customer experience
+        - Optimize field force call plans
+        - Improve sample allocation efficiency
+        """,
+        "metadata": {
+            "typical_algorithms": ["Uplift Models", "Causal Forests", "Meta-learners"],
+            "ensemble_types": ["uplift_ensemble", "meta_learning"],
+            "key_metrics": ["uplift_score", "AUUC", "Qini_coefficient", "predicted_ROI"],
+            "decisions": ["target_selection", "message_content", "channel", "timing"],
+            "typical_features": ["prescribing_potential", "engagement_history", "competitive_pressure", "channel_preference"]
+        },
+        "keywords": ["next best action", "uplift modeling", "messaging optimization", "personalization", "incremental lift"]
+    },
+    
+    # ========================================================================
+    # CATEGORY: ENSEMBLE METHODS
+    # ========================================================================
+    
+    {
+        "doc_id": "ENS001",
+        "category": "ensemble_method",
+        "title": "Ensemble Learning Fundamentals",
+        "content": """
+        Ensemble learning combines multiple models (base learners) to create a more 
+        powerful predictive model than any single model alone.
+        
+        Core Principle: "Wisdom of Crowds"
+        - Different models make different errors
+        - Averaging reduces variance and improves stability
+        - Combining complementary strengths
+        
+        When Ensembles Outperform Base Models:
+        1. Base models are diverse (different algorithms or training data)
+        2. Base models are reasonably accurate (better than random)
+        3. Errors are uncorrelated across base models
+        4. Problem is complex with non-linear relationships
+        5. High-stakes decisions requiring robustness
+        
+        Why Ensembles May Underperform:
+        1. Base models are too similar (no diversity)
+        2. One base model is much stronger than others
+        3. Overfitting: Ensemble learns noise in training data
+        4. Insufficient training data
+        5. Poor meta-learner design (stacking)
+        6. Excessive complexity without benefit
+        
+        Pharma Analytics Applications:
+        - NRx forecasting: Combine XGBoost + Random Forest + LightGBM
+        - HCP response: Stack Logistic Regression + Neural Net + SVM
+        - Feature importance: Use ensemble to identify stable drivers
+        - Drift detection: Monitor ensemble consensus changes
+        
+        Key Considerations:
+        - Interpretability vs Performance tradeoff
+        - Computational cost (training and inference time)
+        - Model maintenance complexity
+        - Diminishing returns beyond 3-5 base models
+        """,
+        "metadata": {
+            "key_principles": ["diversity", "wisdom_of_crowds", "error_reduction"],
+            "success_factors": ["model_diversity", "uncorrelated_errors", "reasonable_accuracy"],
+            "failure_modes": ["overfitting", "lack_of_diversity", "poor_meta_learner"],
+            "typical_improvements": "5-15% metric improvement over best base model"
+        },
+        "keywords": ["ensemble learning", "model combination", "wisdom of crowds", "diversity", "variance reduction"]
+    },
+    
+    {
+        "doc_id": "ENS002",
+        "category": "ensemble_method",
+        "title": "Boosting Ensembles",
+        "content": """
+        Boosting builds an ensemble sequentially, where each new model focuses on 
+        correcting the errors of previous models.
+        
+        How Boosting Works:
+        1. Train first model on full dataset
+        2. Identify observations with large errors
+        3. Give higher weight to misclassified/mispredicted instances
+        4. Train next model on reweighted data
+        5. Repeat for N iterations
+        6. Combine all models with weighted voting
+        
+        Popular Algorithms:
+        - XGBoost: Extreme Gradient Boosting (regularized, parallel)
+        - LightGBM: Light Gradient Boosting Machine (fast, efficient)
+        - CatBoost: Category Boosting (handles categorical variables well)
+        - AdaBoost: Adaptive Boosting (original algorithm)
+        
+        Strengths:
+        - Often achieves best performance on structured data
+        - Handles non-linear relationships well
+        - Built-in feature importance
+        - Less prone to overfitting than single deep trees
+        - Excellent for NRx forecasting and response prediction
+        
+        Weaknesses:
+        - Can overfit with too many iterations
+        - Sensitive to noisy data and outliers
+        - Sequential training (slower than bagging)
+        - Less interpretable than single models
+        - Requires careful hyperparameter tuning
+        
+        Pharma Use Cases:
+        - NRx forecasting: XGBoost captures seasonal patterns + HCP trends
+        - HCP segmentation: LightGBM efficiently handles large HCP databases
+        - Territory allocation: Gradient boosting for complex geographic factors
+        
+        Key Hyperparameters:
+        - n_estimators: Number of boosting rounds (50-500)
+        - learning_rate: Step size shrinkage (0.01-0.3)
+        - max_depth: Tree depth (3-10)
+        - min_child_weight: Minimum samples per leaf
+        - subsample: Fraction of training data per round
+        """,
+        "metadata": {
+            "learning_approach": "sequential",
+            "algorithms": ["XGBoost", "LightGBM", "CatBoost", "AdaBoost"],
+            "best_for": ["structured_data", "non_linear_relationships", "tabular_data"],
+            "typical_hyperparameters": ["n_estimators", "learning_rate", "max_depth"],
+            "risk": "overfitting with too many rounds"
+        },
+        "keywords": ["boosting", "XGBoost", "LightGBM", "gradient boosting", "sequential learning", "error correction"]
+    },
+    
+    {
+        "doc_id": "ENS003",
+        "category": "ensemble_method",
+        "title": "Bagging & Random Forest",
+        "content": """
+        Bagging (Bootstrap Aggregating) creates multiple models by training on different 
+        random samples of the training data, then averages their predictions.
+        
+        How Bagging Works:
+        1. Create N bootstrap samples (random sampling with replacement)
+        2. Train separate model on each sample
+        3. For regression: Average all predictions
+        4. For classification: Majority vote
+        
+        Random Forest Enhancement:
+        - Each tree uses random subset of features at each split
+        - Increases diversity among trees
+        - Reduces correlation between base learners
+        - Typically 100-500 trees
+        
+        Strengths:
+        - Reduces variance and prevents overfitting
+        - Parallel training (faster than boosting)
+        - Robust to noisy data and outliers
+        - No hyperparameter tuning needed for decent performance
+        - Built-in feature importance
+        - Handles missing values well
+        
+        Weaknesses:
+        - Can be biased toward majority class (classification)
+        - Less effective on linear relationships
+        - Larger model size (memory footprint)
+        - May not improve much over single tree if data is limited
+        
+        Pharma Use Cases:
+        - NRx forecasting: Robust predictions with confidence intervals
+        - HCP clustering: Identify similar prescriber groups
+        - Feature importance: Stable rankings across bootstrap samples
+        - Outlier detection: Isolate unusual HCP behaviors
+        
+        Key Hyperparameters:
+        - n_estimators: Number of trees (100-500)
+        - max_features: Features per split ('sqrt', 'log2', or fraction)
+        - max_depth: Maximum tree depth (None or 10-30)
+        - min_samples_split: Minimum samples to split node (2-10)
+        - bootstrap: Whether to use bootstrap sampling (True)
+        
+        Comparison to Boosting:
+        - Bagging: Parallel, stable, less prone to overfit
+        - Boosting: Sequential, higher accuracy, more overfitting risk
+        - Random Forest is often first choice for pharma analytics
+        """,
+        "metadata": {
+            "learning_approach": "parallel",
+            "algorithms": ["Random Forest", "Extra Trees"],
+            "best_for": ["variance_reduction", "robust_predictions", "parallel_training"],
+            "typical_hyperparameters": ["n_estimators", "max_features", "max_depth"],
+            "advantage": "less overfitting than boosting"
+        },
+        "keywords": ["bagging", "random forest", "bootstrap aggregating", "variance reduction", "parallel training"]
+    },
+    
+    {
+        "doc_id": "ENS004",
+        "category": "ensemble_method",
+        "title": "Stacking & Meta-Learning",
+        "content": """
+        Stacking (Stacked Generalization) trains a meta-model to optimally combine 
+        predictions from multiple diverse base models.
+        
+        How Stacking Works:
+        1. Train diverse base models (e.g., RF, XGBoost, LR, Neural Net)
+        2. Generate predictions from each base model
+        3. Use base predictions as features for meta-learner
+        4. Train meta-learner to combine base predictions optimally
+        5. Final prediction comes from meta-learner
+        
+        Architecture:
+        - Level 0 (Base Layer): 3-5 diverse algorithms
+        - Level 1 (Meta Layer): Simple model (LR, Ridge, Elastic Net)
+        - Can have multiple levels (deep stacking)
+        
+        Base Model Selection:
+        - Choose diverse algorithms (tree-based + linear + neural)
+        - Avoid highly correlated models
+        - Each base model should capture different patterns
+        - Examples: {Random Forest, XGBoost, Logistic Regression, SVM}
+        
+        Meta-Learner Selection:
+        - Simple models often work best (Linear Regression, Logistic Regression)
+        - Regularized models prevent overfitting (Ridge, Lasso, Elastic Net)
+        - Neural networks for complex non-linear combinations
+        - Should be different from base models
+        
+        Strengths:
+        - Often achieves best performance by leveraging complementary models
+        - Learns optimal weighting of base models
+        - Can discover non-linear combinations
+        - Flexible: Works with any base model types
+        - Excellent for high-stakes pharma forecasting
+        
+        Weaknesses:
+        - More complex to implement and maintain
+        - Risk of overfitting if not done carefully
+        - Requires careful cross-validation
+        - Higher computational cost
+        - Less interpretable than single models
+        
+        Best Practices:
+        - Use out-of-fold predictions for meta-learner training
+        - Apply cross-validation to prevent overfitting
+        - Keep meta-learner simple (regularized linear model)
+        - Monitor for diminishing returns (>5 base models rarely helps)
+        - Track individual base model performance
+        
+        Pharma Use Cases:
+        - NRx forecasting: Combine boosting (trends) + RF (stability) + LR (interpretability)
+        - HCP response: Stack multiple classifiers for maximum AUC
+        - Territory allocation: Meta-learner weighs regional vs national patterns
+        
+        Why Stacking May Outperform:
+        - Base models capture different aspects of HCP behavior
+        - Meta-learner learns when to trust each base model
+        - Reduces both bias and variance
+        - More robust to unusual market conditions
+        """,
+        "metadata": {
+            "learning_approach": "meta_learning",
+            "typical_base_models": ["Random Forest", "XGBoost", "Logistic Regression", "Neural Network"],
+            "typical_meta_models": ["Linear Regression", "Ridge", "Elastic Net"],
+            "best_for": ["maximum_performance", "leveraging_diversity", "high_stakes_decisions"],
+            "risk": "overfitting if not validated properly",
+            "recommended_base_count": "3-5 models"
+        },
+        "keywords": ["stacking", "meta-learning", "model combination", "heterogeneous ensemble", "optimal weighting"]
+    },
+    
+    {
+        "doc_id": "ENS005",
+        "category": "ensemble_method",
+        "title": "Blending vs Stacking",
+        "content": """
+        Blending is a simpler alternative to stacking that uses a holdout validation 
+        set instead of cross-validation for meta-learner training.
+        
+        Blending Process:
+        1. Split data: Train (50%), Validation (25%), Test (25%)
+        2. Train base models on Train set
+        3. Generate predictions on Validation set
+        4. Train meta-learner on Validation predictions
+        5. Evaluate on Test set
+        
+        Stacking Process:
+        1. Use full training data
+        2. Generate out-of-fold predictions via k-fold CV
+        3. Train meta-learner on out-of-fold predictions
+        4. Evaluate on separate test set
+        
+        Comparison:
+        
+        Blending Advantages:
+        - Simpler implementation
+        - Faster (no cross-validation)
+        - Less prone to overfitting
+        - Easier to debug and understand
+        - Good for quick prototypes
+        
+        Stacking Advantages:
+        - Uses more training data
+        - More robust cross-validation
+        - Better performance (typically 1-3% improvement)
+        - Standard practice in competitions
+        - Better for limited data scenarios
+        
+        When to Use Blending:
+        - Large datasets (>100K samples)
+        - Quick iteration needed
+        - Computational constraints
+        - Team lacks CV expertise
+        - Prototyping phase
+        
+        When to Use Stacking:
+        - Limited training data (<50K samples)
+        - Maximum performance required
+        - Production deployment
+        - Time for proper validation
+        - Competitive benchmarking
+        
+        Pharma Recommendation:
+        - Start with blending for initial model development
+        - Move to stacking for production deployment
+        - Use stacking for critical forecasts (launch products)
+        - Use blending for routine monthly predictions
+        """,
+        "metadata": {
+            "blending_split": "50% train, 25% validation, 25% test",
+            "stacking_approach": "k-fold cross-validation",
+            "blending_advantages": ["simpler", "faster", "less_overfitting"],
+            "stacking_advantages": ["more_data", "better_performance", "more_robust"],
+            "performance_delta": "1-3% in favor of stacking"
+        },
+        "keywords": ["blending", "stacking comparison", "meta-learning", "holdout validation", "cross-validation"]
+    },
+    
+    # ========================================================================
+    # CATEGORY: PERFORMANCE METRICS
+    # ========================================================================
+    
+    {
+        "doc_id": "MET001",
+        "category": "metric",
+        "title": "Regression Metrics for NRx Forecasting",
+        "content": """
+        Regression metrics evaluate how well models predict continuous values like 
+        prescription volumes.
+        
+        RMSE (Root Mean Squared Error):
+        - Formula: sqrt(mean((actual - predicted)²))
+        - Units: Same as target variable (e.g., prescriptions)
+        - Interpretation: Average prediction error magnitude
+        - Penalizes large errors more than small errors
+        - Range: 0 to infinity (lower is better)
+        - Typical good value: RMSE < 15% of mean target value
+        
+        Example: If average NRx = 100/month, RMSE = 15 means typical error is 15 prescriptions
+        - RMSE = 10: Excellent (10% error)
+        - RMSE = 20: Acceptable (20% error)
+        - RMSE = 40: Poor (40% error)
+        
+        MAE (Mean Absolute Error):
+        - Formula: mean(|actual - predicted|)
+        - Units: Same as target variable
+        - Interpretation: Average absolute error
+        - Less sensitive to outliers than RMSE
+        - Range: 0 to infinity (lower is better)
+        - MAE is always ≤ RMSE
+        
+        Comparison:
+        - If RMSE >> MAE: Large outlier errors exist
+        - If RMSE ≈ MAE: Errors are consistent (no large outliers)
+        
+        R² Score (R-Squared / Coefficient of Determination):
+        - Formula: 1 - (sum((actual - predicted)²) / sum((actual - mean)²))
+        - Units: Dimensionless
+        - Interpretation: Proportion of variance explained
+        - Range: -infinity to 1 (higher is better)
+        - R² = 1.0: Perfect predictions
+        - R² = 0.0: Model no better than predicting mean
+        - R² < 0.0: Model worse than predicting mean
+        
+        Typical benchmarks:
+        - R² > 0.7: Good model for pharma forecasting
+        - R² = 0.5-0.7: Acceptable, room for improvement
+        - R² < 0.5: Poor, need better features or model
+        
+        MAPE (Mean Absolute Percentage Error):
+        - Formula: mean(|actual - predicted| / actual) × 100
+        - Units: Percentage
+        - Interpretation: Average percentage error
+        - Range: 0% to infinity (lower is better)
+        - Easy to communicate to business stakeholders
+        
+        Issues with MAPE:
+        - Undefined when actual = 0
+        - Asymmetric: Penalizes over-predictions more than under-predictions
+        - Not suitable when target has zeros or near-zeros
+        
+        Metric Selection for Pharma:
+        - Primary: RMSE (captures large errors, common standard)
+        - Secondary: R² (explains variance, easy to interpret)
+        - Communication: MAPE (business stakeholders understand %)
+        - Robustness check: MAE (verify no extreme outliers)
+        
+        Ensemble Advantage:
+        - Ensembles typically reduce RMSE by 5-15% vs best base model
+        - R² improvements of 0.03-0.10 are meaningful
+        - More stable predictions (lower variance in RMSE across CV folds)
+        """,
+        "metadata": {
+            "metric_types": ["RMSE", "MAE", "R2", "MAPE", "MSE"],
+            "lower_is_better": ["RMSE", "MAE", "MAPE", "MSE"],
+            "higher_is_better": ["R2"],
+            "typical_primary_metric": "RMSE",
+            "business_metric": "MAPE",
+            "typical_r2_threshold": 0.7,
+            "ensemble_improvement_range": "5-15% RMSE reduction"
+        },
+        "keywords": ["RMSE", "MAE", "R2", "regression metrics", "forecasting accuracy", "error measurement"]
+    },
+    
+    {
+        "doc_id": "MET002",
+        "category": "metric",
+        "title": "Classification Metrics for HCP Response",
+        "content": """
+        Classification metrics evaluate how well models predict categorical outcomes 
+        like HCP response to marketing campaigns.
+        
+        AUC-ROC (Area Under Receiver Operating Characteristic Curve):
+        - Range: 0.5 to 1.0 (higher is better)
+        - Interpretation: Probability model ranks random positive higher than random negative
+        - AUC = 0.5: Random guessing
+        - AUC = 0.7-0.8: Acceptable discrimination
+        - AUC = 0.8-0.9: Good discrimination
+        - AUC > 0.9: Excellent (rare in pharma, check for data leakage)
+        
+        Why AUC-ROC is preferred in pharma:
+        - Threshold-independent (evaluates ranking ability)
+        - Robust to class imbalance
+        - Easy to compare models
+        - Industry standard for response modeling
+        
+        Typical pharma benchmarks:
+        - HCP response prediction: AUC = 0.75-0.85
+        - NRx/No-NRx classification: AUC = 0.70-0.80
+        - Event attendance: AUC = 0.65-0.75
+        
+        Accuracy:
+        - Formula: (TP + TN) / Total
+        - Range: 0 to 1 (higher is better)
+        - Problem: Misleading with imbalanced classes
+        
+        Example: If only 5% of HCPs respond to campaigns:
+        - Model predicting "no response" for everyone: 95% accuracy
+        - But completely useless for business!
+        - AUC would correctly show ~0.5 (random)
+        
+        Precision (Positive Predictive Value):
+        - Formula: TP / (TP + FP)
+        - Interpretation: Of predicted responders, what % actually respond?
+        - Important when cost of false positives is high
+        - Pharma use: Minimize wasted marketing spend on predicted responders who don't respond
+        
+        Recall (Sensitivity, True Positive Rate):
+        - Formula: TP / (TP + FN)
+        - Interpretation: Of actual responders, what % did we identify?
+        - Important when cost of false negatives is high
+        - Pharma use: Ensure we don't miss high-potential HCPs
+        
+        F1 Score:
+        - Formula: 2 × (Precision × Recall) / (Precision + Recall)
+        - Range: 0 to 1 (higher is better)
+        - Harmonic mean of precision and recall
+        - Use when you need balance between precision and recall
+        
+        Precision-Recall Tradeoff:
+        - High precision → Few false alarms, may miss opportunities
+        - High recall → Capture all opportunities, more false alarms
+        - Business decision depends on cost structure
+        
+        Lift and Gain Charts:
+        - Lift: How much better than random targeting
+        - Top decile lift: Response rate in top 10% / overall response rate
+        - Typical good lift: 3-5x in top decile
+        - Used for campaign targeting optimization
+        
+        Confusion Matrix Elements:
+        - True Positive (TP): Correctly predicted responder
+        - True Negative (TN): Correctly predicted non-responder
+        - False Positive (FP): Predicted responder, actually didn't respond (wasted spend)
+        - False Negative (FN): Predicted non-responder, actually would respond (missed opportunity)
+        
+        Metric Selection for Pharma:
+        - Primary: AUC-ROC (standard for response models)
+        - Secondary: Precision at top K% (for targeting efficiency)
+        - Tertiary: Lift charts (for business communication)
+        - Avoid: Raw accuracy (misleading with imbalance)
+        
+        Ensemble Advantage:
+        - Ensembles typically improve AUC by 0.02-0.05
+        - Even 0.02 AUC improvement = significant $ in large campaigns
+        - More stable predictions across different time periods
+        """,
+        "metadata": {
+            "metric_types": ["AUC_ROC", "Precision", "Recall", "F1", "Accuracy", "Lift"],
+            "primary_metric": "AUC_ROC",
+            "typical_auc_range": "0.70-0.85",
+            "good_lift": "3-5x in top decile",
+            "ensemble_improvement": "0.02-0.05 AUC increase",
+            "avoid": "accuracy with imbalanced classes"
+        },
+        "keywords": ["AUC-ROC", "precision", "recall", "F1 score", "classification metrics", "response modeling", "lift"]
+    },
+    
+    {
+        "doc_id": "MET003",
+        "category": "metric",
+        "title": "Uplift Modeling Metrics",
+        "content": """
+        Uplift modeling metrics measure a model's ability to identify individuals 
+        who will respond positively to treatment (marketing intervention).
+        
+        Key Concept:
+        - Goal: Maximize incremental impact, not just response rate
+        - Four segments:
+          1. Persuadables: Respond only if treated (TARGET THESE)
+          2. Sure Things: Respond regardless (don't waste resources)
+          3. Lost Causes: Don't respond regardless (avoid)
+          4. Sleeping Dogs: Respond only if NOT treated (definitely avoid)
+        
+        AUUC (Area Under Uplift Curve):
+        - Range: -0.5 to 0.5 (higher is better)
+        - AUUC = 0: No uplift capability (random)
+        - AUUC > 0.05: Good uplift model for pharma
+        - AUUC > 0.10: Excellent uplift model
+        - Interpretation: Expected incremental response from optimal targeting
+        
+        Qini Coefficient:
+        - Variant of AUUC with different weighting
+        - Range: Unbounded (higher is better)
+        - More sensitive to gains in high-scoring individuals
+        - Preferred in academic literature
+        
+        Uplift at Top K%:
+        - Incremental response rate in top K% vs random
+        - Example: Top 20% has 15% uplift, random has 5% uplift
+        - Uplift at top 20% = 15% - 5% = 10 percentage points
+        - Directly translates to ROI
+        
+        Incremental Lift:
+        - Treatment effect size
+        - Formula: (Response rate treated - Response rate control) / Response rate control
+        - Example: 10% treated response, 6% control response
+        - Incremental lift = (10% - 6%) / 6% = 67% improvement
+        
+        Practical Pharma Example:
+        Without uplift model (random targeting):
+        - Contact 10,000 HCPs
+        - 500 respond (5% response rate)
+        - Cost: $50,000
+        - Revenue: $100,000
+        - ROI: 100%
+        
+        With uplift model (target persuadables):
+        - Contact 10,000 HCPs (top 20% by uplift score)
+        - 800 respond (8% response rate in targeted group)
+        - Cost: $50,000
+        - Revenue: $160,000
+        - ROI: 220%
+        - Improvement: 60 percentage points ROI
+        
+        Challenges:
+        - Requires randomized control group data
+        - More complex than standard response models
+        - Needs larger sample sizes
+        - Difficult to validate in production
+        
+        Model Requirements:
+        - Treatment and control group observations
+        - Sufficient overlap in covariate distributions
+        - Representative randomization
+        - Minimum sample size: 10,000+ per group
+        
+        Ensemble Advantage for Uplift:
+        - Combining causal forest + meta-learners reduces bias
+        - More robust to treatment effect heterogeneity
+        - Better handling of small treatment effects
+        - Typical improvement: 0.02-0.04 AUUC
+        """,
+        "metadata": {
+            "metric_types": ["AUUC", "Qini", "uplift_at_top_k", "incremental_lift"],
+            "typical_auuc_range": "0.02-0.10",
+            "good_auuc": 0.05,
+            "requires": "randomized control group",
+            "four_segments": ["persuadables", "sure_things", "lost_causes", "sleeping_dogs"],
+            "target_segment": "persuadables"
+        },
+        "keywords": ["uplift modeling", "AUUC", "Qini", "incremental lift", "treatment effect", "causal inference", "persuadables"]
+    },
+    
+    # ========================================================================
+    # CATEGORY: BUSINESS CONTEXT
+    # ========================================================================
+    
+    {
+        "doc_id": "BIZ001",
+        "category": "business_context",
+        "title": "Pharmaceutical Commercial Model Lifecycle",
+        "content": """
+        ML models in pharma commercial analytics go through a structured lifecycle 
+        from development to retirement.
+        
+        1. Model Development (Weeks 1-8):
+        - Business problem definition and success metrics
+        - Data collection and quality assessment
+        - Feature engineering with commercial input
+        - Algorithm selection and hyperparameter tuning
+        - Cross-validation and performance evaluation
+        - Model comparison (base models vs ensembles)
+        - Stakeholder review and approval
+        
+        Key deliverables:
+        - Model performance report
+        - Feature importance analysis
+        - Business case and expected ROI
+        - Deployment plan
+        
+        2. Model Deployment (Weeks 9-12):
+        - Integration with data pipelines
+        - Prediction generation workflow
+        - Business rule integration
+        - User interface development
+        - Training for commercial teams
+        - Production monitoring setup
+        
+        3. Model Monitoring (Ongoing):
+        - Weekly: Prediction volume and distribution checks
+        - Monthly: Performance metrics vs baseline
+        - Quarterly: Drift detection analysis
+        - Annual: Full model revalidation
+        
+        Monitoring triggers:
+        - Performance degradation > 10%
+        - Data drift score > threshold
+        - Prediction distribution shifts
+        - Business outcomes diverge from predictions
+        - New competitive entry or market change
+        
+        4. Model Retraining (As needed):
+        - Triggered by monitoring alerts
+        - Incorporate recent data (rolling window)
+        - Re-evaluate feature importance
+        - Compare new version to current version
+        - A/B testing before full deployment
+        
+        Retraining frequency:
+        - NRx models: Monthly or quarterly
+        - HCP response: After each major campaign
+        - Uplift models: Bi-annually
+        - Drift detection: Continuous monitoring
+        
+        5. Model Retirement (When appropriate):
+        - New model significantly outperforms (>15% improvement)
+        - Business use case changes
+        - Regulatory requirements change
+        - Data sources deprecated
+        - Market dynamics fundamentally shift
+        
+        Version Control:
+        - Semantic versioning (v1.0, v1.1, v2.0)
+        - Major version: Algorithm or architecture change
+        - Minor version: Feature updates or hyperparameter tuning
+        - Patch: Bug fixes or minor adjustments
+        - All versions tracked in model registry
+        
+        Governance:
+        - Model risk assessment
+        - Documentation requirements
+        - Approval workflows
+        - Audit trail for predictions
+        - Regulatory compliance (where applicable)
+        
+        Ensemble-Specific Considerations:
+        - Track performance of individual base models
+        - Monitor meta-learner weights over time
+        - More complex deployment infrastructure
+        - Longer training times
+        - Higher maintenance overhead
+        - Document ensemble composition and rationale
+        """,
+        "metadata": {
+            "phases": ["development", "deployment", "monitoring", "retraining", "retirement"],
+            "monitoring_frequency": {"weekly": "volume_checks", "monthly": "performance", "quarterly": "drift", "annual": "revalidation"},
+            "retraining_triggers": ["performance_degradation", "data_drift", "market_change"],
+            "version_types": ["major", "minor", "patch"]
+        },
+        "keywords": ["model lifecycle", "deployment", "monitoring", "retraining", "governance", "version control"]
+    },
+    
+    {
+        "doc_id": "BIZ002",
+        "category": "business_context",
+        "title": "Pharma Commercial Terminology",
+        "content": """
+        Key terminology used in pharmaceutical commercial analytics and modeling.
+        
+        PRESCRIPTION METRICS:
+        
+        TRx (Total Prescriptions):
+        - New prescriptions + Refills
+        - Total volume of prescriptions written
+        - Lagging indicator (includes ongoing treatment)
+        
+        NRx (New Prescriptions):
+        - Only new prescriptions (first fill)
+        - Leading indicator of market adoption
+        - More sensitive to marketing efforts
+        - Critical for product launches
+        
+        NBRx (New-to-Brand Prescriptions):
+        - New prescriptions from HCPs who haven't prescribed brand before
+        - Indicator of market expansion
+        
+        Refill Rate:
+        - Percentage of NRx that become refills
+        - Indicator of treatment persistence
+        - TRx/NRx ratio
+        
+        HEALTHCARE PROVIDERS (HCPs):
+        
+        HCP:
+        - Healthcare Provider (doctor, nurse practitioner, physician assistant)
+        - Primary target for pharma marketing
+        
+        Prescriber Types:
+        - High prescribers: Top 10-20% by volume
+        - Medium prescribers: Middle 30-40%
+        - Low prescribers: Bottom 40-50%
+        - Non-prescribers: Have not written prescriptions
+        
+        HCP Specialty:
+        - Therapeutic area focus (e.g., cardiology, oncology, primary care)
+        - Major segmentation dimension
+        - Different specialties have different prescribing patterns
+        
+        Decile Segmentation:
+        - HCPs ranked into 10 equal groups by prescription volume
+        - Decile 1: Top 10% of prescribers
+        - Decile 10: Bottom 10% of prescribers
+        - Marketing often focuses on deciles 1-3
+        
+        MARKETING ACTIVITIES:
+        
+        Detailing:
+        - Face-to-face sales calls with HCPs
+        - Most expensive marketing channel
+        - ~15-30 minutes per call
+        - Goal: Education and relationship building
+        
+        Call Plan:
+        - Sales rep's schedule of HCP visits
+        - Optimized by territory and priority
+        - Typical frequency: Monthly or quarterly per HCP
+        
+        Sample Drops:
+        - Free product samples provided to HCPs
+        - For patient trials
+        - Significant cost, closely tracked
+        
+        Speaker Programs:
+        - HCPs paid to present to peers
+        - High engagement, expensive
+        - Regulated by compliance
+        
+        Digital Channels:
+        - Email campaigns
+        - Banner ads
+        - Educational webinars
+        - Lower cost, measurable engagement
+        
+        MARKET METRICS:
+        
+        Share of Voice (SOV):
+        - Brand's marketing presence vs competitors
+        - Measured by call frequency, spend, impressions
+        
+        Market Share:
+        - Brand's prescriptions / Total category prescriptions
+        - Key success metric
+        
+        Patient Share:
+        - Percentage of patients on brand vs alternatives
+        - More stable than script share
+        
+        TERRITORY MANAGEMENT:
+        
+        Territory:
+        - Geographic sales region assigned to rep
+        - Typically 100-300 HCPs per territory
+        - Optimized by potential, not just geography
+        
+        Alignment:
+        - Process of dividing market into territories
+        - Goal: Balance workload and opportunity
+        
+        Targeting:
+        - Selecting which HCPs to prioritize
+        - Based on potential, accessibility, alignment
+        
+        MODELING TERMINOLOGY:
+        
+        Lookalike Modeling:
+        - Finding HCPs similar to known high responders
+        - Clustering and similarity algorithms
+        
+        Propensity Score:
+        - Likelihood of desired behavior (prescribe, respond, attend)
+        - Output of response models
+        - Used for targeting and ranking
+        
+        Attribution:
+        - Assigning credit for prescriptions to marketing activities
+        - Challenge: Multiple touchpoints
+        - Multi-touch attribution models
+        
+        Baseline Forecast:
+        - Expected prescriptions without incremental marketing
+        - Control group or time-series projection
+        - Used to calculate uplift
+        
+        Incrementality:
+        - Prescriptions caused by marketing above baseline
+        - Uplift modeling target
+        - Key ROI metric
+        """,
+        "metadata": {
+            "prescription_types": ["TRx", "NRx", "NBRx"],
+            "hcp_segments": ["high_prescribers", "medium_prescribers", "low_prescribers"],
+            "marketing_channels": ["detailing", "samples", "speakers", "digital"],
+            "key_metrics": ["market_share", "share_of_voice", "incrementality"]
+        },
+        "keywords": ["TRx", "NRx", "HCP", "detailing", "market share", "share of voice", "incrementality", "pharma terminology"]
+    },
+    
+    {
+        "doc_id": "BIZ003",
+        "category": "business_context",
+        "title": "Why Ensembles Fail: Common Pitfalls",
+        "content": """
+        Understanding when and why ensemble models underperform helps avoid 
+        costly mistakes in pharma commercial analytics.
+        
+        PITFALL 1: Lack of Base Model Diversity
+        Problem:
+        - Using multiple similar algorithms (e.g., 3 versions of XGBoost)
+        - All base models make the same errors
+        - No benefit from combination
+        
+        Example:
+        - Base models: XGBoost, LightGBM, CatBoost (all gradient boosting)
+        - Ensemble RMSE: 45
+        - Best base RMSE: 46
+        - Improvement: Only 2% (not worth complexity)
+        
+        Solution:
+        - Mix algorithm families: Trees + Linear + Neural
+        - Use different feature sets for each base model
+        - Vary training data (bagging) or approach (boosting)
+        
+        PITFALL 2: One Dominant Base Model
+        Problem:
+        - One base model much stronger than others
+        - Weak models add noise, not signal
+        - Ensemble performs worse than best single model
+        
+        Example:
+        - XGBoost RMSE: 40 (strong)
+        - Linear Regression RMSE: 80 (weak)
+        - Random Forest RMSE: 75 (weak)
+        - Ensemble RMSE: 42 (worse than XGBoost alone!)
+        
+        Solution:
+        - Only include models within 10-15% of best performer
+        - Remove or improve weak base models
+        - Consider weighted voting (more weight to strong models)
+        - Use stacking to learn optimal weights automatically
+        
+        PITFALL 3: Overfitting in Meta-Learner
+        Problem:
+        - Meta-learner too complex (e.g., deep neural network)
+        - Learns noise in validation set
+        - Poor generalization to new data
+        
+        Example:
+        - Validation R²: 0.85 (great!)
+        - Test R²: 0.65 (poor!)
+        - Gap indicates overfitting
+        
+        Solution:
+        - Use simple meta-learner (linear regression, ridge)
+        - Apply regularization (L1/L2 penalty)
+        - Use out-of-fold predictions for training
+        - Monitor validation vs test performance gap
+        
+        PITFALL 4: Data Leakage
+        Problem:
+        - Future information leaked into model training
+        - Unrealistic performance in development
+        - Catastrophic failure in production
+        
+        Common sources in pharma:
+        - Using future prescription data to predict past
+        - Including target-derived features
+        - Not respecting temporal ordering
+        - Using post-campaign data to predict campaign response
+        
+        Example:
+        - Model achieves R² = 0.95 (suspiciously high!)
+        - Investigation reveals "total_annual_prescriptions" feature
+        - This includes future data not available at prediction time
+        - Production performance: R² = 0.60
+        
+        Solution:
+        - Strict temporal validation splits
+        - Feature engineering audit
+        - Production simulation during development
+        - Monitoring for performance cliff in production
+        
+        PITFALL 5: Insufficient Training Data
+        Problem:
+        - Not enough data to train multiple models + meta-learner
+        - Ensembles need more data than single models
+        - High variance in performance estimates
+        
+        Rule of thumb:
+        - Minimum: 10,000 observations for simple ensemble
+        - Recommended: 50,000+ for complex stacking
+        - More data needed for many features or complex meta-learner
+        
+        Solution:
+        - Use simpler ensemble (bagging vs stacking)
+        - Reduce number of base models
+        - Consider single strong model instead
+        - Collect more data before deploying ensemble
+        
+        PITFALL 6: Ignoring Business Context
+        Problem:
+        - Optimizing pure statistical metrics
+        - Ignoring business costs and constraints
+        - Model not aligned with business goals
+        
+        Example:
+        - Ensemble AUC: 0.82 vs Best Base AUC: 0.80
+        - Ensemble training time: 10 hours vs Base: 1 hour
+        - Ensemble complexity: 5 models vs Base: 1 model
+        - Business impact: Minimal (predictions used monthly, not real-time)
+        - Decision: Not worth ensemble complexity for 0.02 AUC gain
+        
+        Solution:
+        - Define business-relevant metrics
+        - Consider maintenance costs
+        - Evaluate complexity vs benefit tradeoff
+        - Prototype and measure ROI before full deployment
+        
+        PITFALL 7: Poor Cross-Validation Strategy
+        Problem:
+        - Random CV on time-series data
+        - Data leakage across folds
+        - Overly optimistic performance estimates
+        
+        Solution for pharma:
+        - Use time-series CV (train on past, validate on future)
+        - Block/Group CV for hierarchical data (HCPs within territories)
+        - Stratified CV to maintain class balance
+        - Leave-one-group-out for generalization testing
+        
+        PITFALL 8: Not Monitoring Individual Base Models
+        Problem:
+        - Only tracking ensemble performance
+        - Don't know which base models are drifting
+        - Can't diagnose issues
+        
+        Solution:
+        - Track all base model metrics separately
+        - Monitor meta-learner weights over time
+        - Alert when base model performance diverges significantly
+        - Regular model health checks
+        
+        Warning Signs Your Ensemble Is Failing:
+        - Minimal improvement over best base model (<3%)
+        - High variance in cross-validation scores
+        - Large gap between validation and test performance
+        - Base models highly correlated (>0.95)
+        - Meta-learner weights very imbalanced (e.g., 0.95 on one model)
+        - Predictions don't make business sense
+        - Maintenance overhead exceeds benefit
+        """,
+        "metadata": {
+            "common_pitfalls": [
+                "lack_of_diversity",
+                "one_dominant_model",
+                "meta_learner_overfitting",
+                "data_leakage",
+                "insufficient_data",
+                "ignoring_business_context",
+                "poor_cv_strategy"
+            ],
+            "minimum_data": 10000,
+            "recommended_data": 50000,
+            "minimum_improvement_threshold": "3-5%",
+            "warning_signs": ["low_improvement", "high_variance", "val_test_gap"]
+        },
+        "keywords": ["ensemble failures", "pitfalls", "overfitting", "data leakage", "model diversity", "common mistakes"]
+    },
+    
+    # ========================================================================
+    # CATEGORY: FEATURES & DATA
+    # ========================================================================
+    
+    {
+        "doc_id": "FEAT001",
+        "category": "features",
+        "title": "HCP Features for Prescribing Models",
+        "content": """
+        Key features used to predict HCP prescribing behavior in pharma analytics.
+        
+        DEMOGRAPHIC FEATURES:
+        
+        Specialty:
+        - Primary therapeutic focus (cardiology, oncology, primary care, etc.)
+        - Most important feature (typically top 3)
+        - High predictive power for product-specific models
+        - Categorical encoding: One-hot or target encoding
+        
+        Years in Practice:
+        - Time since medical school graduation
+        - Proxy for experience and prescribing patterns
+        - Younger HCPs may be more open to new treatments
+        - Older HCPs may have established prescribing habits
+        
+        Practice Setting:
+        - Hospital, clinic, private practice, academic medical center
+        - Influences access and prescribing autonomy
+        - Hospital settings may have formulary restrictions
+        
+        Practice Size:
+        - Number of providers in group
+        - Solo practitioners vs large groups
+        - Impacts decision-making process
+        
+        Patient Volume:
+        - Patients seen per month/year
+        - Direct relationship with prescription potential
+        - Often top 5 most important feature
+        
+        Geography:
+        - ZIP code, city, state, region
+        - Captures local market dynamics
+        - Regional prescribing variations
+        
+        PRESCRIBING HISTORY FEATURES:
+        
+        Historical TRx/NRx:
+        - Past prescription volumes (6-12 month lookback)
+        - Strongest predictor (often #1 feature)
+        - Trend: Increasing, stable, or declining
+        
+        Brand Loyalty:
+        - Percentage of prescriptions for specific brand
+        - Indicates switching likelihood
+        - Calculated per therapeutic class
+        
+        Competitive Prescribing:
+        - Prescriptions for competitor products
+        - Market share within HCP practice
+        - Switching potential indicator
+        
+        Therapeutic Class Experience:
+        - Total prescriptions in relevant therapeutic area
+        - Indicates treatment familiarity
+        - Proxy for patient population
+        
+        Prescribing Breadth:
+        - Number of different products prescribed
+        - Early adopter indicator
+        - Risk tolerance proxy
+        
+        Seasonality Patterns:
+        - Month-over-month variation
+        - Captures cyclical trends
+        - Important for accurate forecasting
+        
+        MARKETING TOUCHPOINT FEATURES:
+        
+        Call Frequency:
+        - Number of sales rep visits (past 3-6 months)
+        - Lag effect: Impact may be delayed 1-2 months
+        - Diminishing returns after 3-4 calls per quarter
+        
+        Sample Volume:
+        - Number of samples received
+        - Strong predictor for trial initiation
+        - Regulatory limits vary by product
+        
+        Digital Engagement:
+        - Email opens, clicks, website visits
+        - Lower cost touchpoint
+        - Engagement score composite
+        
+        Event Attendance:
+        - Speaker programs, conferences, dinners
+        - High engagement signal
+        - Often combined with peer influence
+        
+        Last Touchpoint Recency:
+        - Days since last interaction
+        - Decay function for impact
+        - Typical half-life: 30-60 days
+        
+        Touchpoint Sequencing:
+        - Order and combination of channels
+        - Multi-touch attribution
+        - Synergy between channels
+        
+        Message Exposure:
+        - Specific campaigns or messages seen
+        - A/B testing of creative
+        - Resonance varies by HCP segment
+        
+        MARKET & COMPETITIVE FEATURES:
+        
+        Share of Voice:
+        - Brand marketing presence vs competitors
+        - Territory-level or HCP-level
+        - Includes all channels
+        
+        Competitive Activity:
+        - Competitor sales rep visits
+        - Competitive sample drops
+        - Market entry/exit events
+        
+        Local Market Share:
+        - Brand share in HCP's geography
+        - Peer prescribing influence
+        - Network effects
+        
+        Formulary Status:
+        - Coverage tier and restrictions
+        - Prior authorization requirements
+        - Patient access barriers
+        
+        PATIENT POPULATION FEATURES:
+        
+        Patient Demographics:
+        - Age distribution of patients
+        - Insurance mix (commercial, Medicare, Medicaid)
+        - Socioeconomic indicators
+        
+        Comorbidity Profile:
+        - Prevalence of relevant conditions
+        - Treatment complexity
+        - Polypharmacy considerations
+        
+        Patient Turnover:
+        - New patient rate
+        - Patient retention
+        - Practice growth indicator
+        
+        FEATURE ENGINEERING TIPS:
+        
+        Lag Features:
+        - Use 1, 3, 6, 12 month lags of prescription volumes
+        - Capture momentum and trends
+        - Example: NRx_lag_1, NRx_lag_3
+        
+        Rolling Statistics:
+        - Moving averages (3, 6, 12 months)
+        - Standard deviations (volatility)
+        - Min/max ranges
+        
+        Ratios and Interactions:
+        - NRx/Patient_volume (penetration rate)
+        - Call_frequency * Sample_volume (intensity)
+        - Brand_share / Competitor_share (relative position)
+        
+        Time-based Features:
+        - Month, quarter (seasonality)
+        - Days since launch
+        - Time since last prescription
+        
+        Segment-based Features:
+        - HCP tier (high/medium/low potential)
+        - Behavioral segment (early adopter, conservative, etc.)
+        - Risk group
+        
+        FEATURE IMPORTANCE IN PHARMA ENSEMBLES:
+        
+        Typical Top 10 Features (NRx Forecasting):
+        1. Historical NRx (lag 1-3 months)
+        2. Patient volume
+        3. HCP specialty
+        4. Call frequency (lag 1 month)
+        5. Historical TRx trends
+        6. Geographic region
+        7. Sample volume
+        8. Competitive prescribing
+        9. Practice setting
+        10. Years in practice
+        
+        Ensemble-Specific Insights:
+        - Boosting models favor historical prescribing (70% importance)
+        - Linear models favor demographic and marketing features
+        - Neural networks find complex interactions
+        - Ensemble combines all perspectives
+        - Meta-learner learns when to trust each model
+        """,
+        "metadata": {
+            "feature_categories": [
+                "demographic",
+                "prescribing_history",
+                "marketing_touchpoints",
+                "market_competitive",
+                "patient_population"
+            ],
+            "top_features": [
+                "historical_nrx",
+                "patient_volume",
+                "specialty",
+                "call_frequency",
+                "trx_trends"
+            ],
+            "typical_feature_count": "50-200 features",
+            "lag_periods": [1, 3, 6, 12]
+        },
+        "keywords": ["features", "HCP attributes", "prescribing behavior", "marketing touchpoints", "feature engineering", "predictive variables"]
+    },
+    
+    {
+        "doc_id": "FEAT002",
+        "category": "features",
+        "title": "Feature Interactions in Ensemble Models",
+        "content": """
+        Feature interactions occur when the combined effect of two features differs 
+        from their individual effects. Ensemble models excel at capturing these.
+        
+        WHY INTERACTIONS MATTER:
+        
+        Real-world behavior is non-linear:
+        - Marketing impact depends on HCP characteristics
+        - Specialty determines which features are important
+        - Historical behavior moderates marketing effectiveness
+        
+        Example Interaction:
+        - Call frequency alone: Low importance
+        - HCP engagement score alone: Medium importance
+        - Call frequency × Engagement: High importance
+        - Interpretation: Calls only work on engaged HCPs
+        
+        COMMON PHARMA INTERACTIONS:
+        
+        1. Specialty × Marketing Channel
+        - Primary care HCPs respond to different channels than specialists
+        - Cardiologists prefer conferences, PCPs prefer samples
+        - Model learns specialty-specific marketing mix
+        
+        2. Historical Prescribing × Call Frequency
+        - High historical prescribers: Minimal call impact (already prescribing)
+        - Medium prescribers: Strong call impact (growth potential)
+        - Low prescribers: Moderate call impact (awareness building)
+        - Interaction reveals targeting sweet spot
+        
+        3. Patient Volume × Sample Drops
+        - High patient volume + High samples = Strong effect
+        - High patient volume + Low samples = Missed opportunity
+        - Low patient volume + High samples = Wasted resources
+        - Optimal sample allocation per HCP volume
+        
+        4. Competitive Pressure × Brand Loyalty
+        - High competition + Low loyalty = High switching risk
+        - High competition + High loyalty = Defensive success
+        - Low competition + Low loyalty = Growth opportunity
+        - Guides competitive strategy
+        
+        5. Geography × Seasonality
+        - Northern states: Flu season prescribing peaks
+        - Southern states: Different seasonal patterns
+        - Regional campaigns timed to local patterns
+        
+        6. Years in Practice × Early Adopter Behavior
+        - Young HCPs + Early adopter = Trial-prone (high potential)
+        - Young HCPs + Conservative = Need education
+        - Experienced HCPs + Early adopter = Opinion leaders
+        - Experienced HCPs + Conservative = Difficult to change
+        
+        HOW ENSEMBLES CAPTURE INTERACTIONS:
+        
+        Tree-Based Models:
+        - Natural interaction detection through splits
+        - Example: Split on specialty, then split on call frequency
+        - Automatic feature interaction up to tree depth
+        
+        Linear Models:
+        - Require explicit interaction terms
+        - Feature_A * Feature_B
+        - Combinatorial explosion with many features
+        
+        Neural Networks:
+        - Hidden layers learn interactions
+        - Black box nature makes interpretation difficult
+        - Can capture very complex interactions
+        
+        Ensemble Advantage:
+        - Trees capture local interactions
+        - Linear models capture global trends
+        - Neural nets capture complex non-linear patterns
+        - Meta-learner combines complementary interaction patterns
+        - Result: More robust and complete interaction coverage
+        
+        DETECTING IMPORTANT INTERACTIONS:
+        
+        SHAP Interaction Values:
+        - Quantifies pairwise feature interactions
+        - Shows how features work together
+        - Visualize with interaction plots
+        
+        Partial Dependence Plots:
+        - Show effect of feature combinations
+        - 2D plots reveal interaction surfaces
+        - Example: Call frequency on X, Historical NRx on Y, Color = Prediction
+        
+        H-Statistic:
+        - Measures strength of pairwise interactions
+        - 0 = No interaction, 1 = Pure interaction
+        - Identifies which interactions to investigate
+        
+        Business Rules from Interactions:
+        - "Increase call frequency for medium historical prescribers in cardiology"
+        - "Allocate more samples to high patient volume PCPs"
+        - "Focus digital channels on younger, tech-savvy HCPs"
+        
+        INTERACTION EXAMPLES WITH NUMBERS:
+        
+        Example 1: Specialty × Marketing
+        Primary Care:
+        - Base response rate: 5%
+        - With samples: +8% (13% total)
+        - With calls: +3% (8% total)
+        - Sample interaction effect: Strong
+        
+        Cardiology:
+        - Base response rate: 8%
+        - With samples: +2% (10% total)
+        - With calls: +7% (15% total)
+        - Call interaction effect: Strong
+        
+        Business action: Customize channel mix by specialty
+        
+        Example 2: Historical NRx × Call Frequency
+        High Historical (>50 NRx/month):
+        - 0 calls: 55 NRx predicted
+        - 4 calls: 57 NRx predicted
+        - Marginal gain: 2 NRx (4% lift)
+        
+        Medium Historical (10-50 NRx/month):
+        - 0 calls: 20 NRx predicted
+        - 4 calls: 32 NRx predicted
+        - Marginal gain: 12 NRx (60% lift)
+        
+        Low Historical (<10 NRx/month):
+        - 0 calls: 3 NRx predicted
+        - 4 calls: 5 NRx predicted
+        - Marginal gain: 2 NRx (67% lift)
+        
+        Business action: Prioritize calls to medium prescribers (best absolute gain)
+        
+        ENSEMBLE VS BASE MODEL INTERACTION HANDLING:
+        
+        Single Decision Tree:
+        - Captures up to depth-level interactions
+        - Example: Depth 5 = up to 5-way interactions
+        - Limited generalization
+        
+        Random Forest:
+        - Averages many trees
+        - Stable interaction detection
+        - May miss weak interactions
+        
+        Gradient Boosting:
+        - Sequential error correction
+        - Excellent for strong interactions
+        - Can overfit to spurious interactions
+        
+        Ensemble (Stacking):
+        - Combines all interaction patterns
+        - Random Forest: Robust main effects
+        - XGBoost: Strong local interactions
+        - Linear model: Global trends
+        - Meta-learner: Optimal weighting by context
+        - Result: 10-20% better interaction coverage
+        """,
+        "metadata": {
+            "common_interactions": [
+                "specialty_marketing_channel",
+                "historical_prescribing_calls",
+                "patient_volume_samples",
+                "competitive_pressure_loyalty",
+                "geography_seasonality"
+            ],
+            "detection_methods": ["SHAP_interaction", "partial_dependence", "h_statistic"],
+            "ensemble_advantage": "combines multiple interaction patterns"
+        },
+        "keywords": ["feature interactions", "non-linear effects", "SHAP", "synergy", "combined effects", "interaction detection"]
+    },
+    
+    # ========================================================================
+    # CATEGORY: TROUBLESHOOTING & DEBUGGING
+    # ========================================================================
+    
+    {
+        "doc_id": "DEBUG001",
+        "category": "troubleshooting",
+        "title": "Diagnosing Ensemble Performance Issues",
+        "content": """
+        Systematic approach to troubleshooting when ensemble models underperform 
+        expectations in pharma commercial analytics.
+        
+        STEP 1: COMPARE TO BASELINE
+        
+        Questions:
+        - What is ensemble performance vs best base model?
+        - What is expected improvement range? (typically 3-10%)
+        - Is improvement statistically significant?
+        - Is improvement consistent across validation folds?
+        
+        Red flags:
+        - Ensemble worse than best base model
+        - Ensemble improvement <2%
+        - High variance across CV folds
+        - Improvement disappears on test set
+        
+        STEP 2: CHECK BASE MODEL DIVERSITY
+        
+        Metrics:
+        - Prediction correlation between base models
+        - Should be <0.9 for good diversity
+        - If >0.95, models too similar
+        
+        Analysis:
+        ```
+        Check pairwise correlations:
+        - Model A vs Model B: 0.97 (too high!)
+        - Model A vs Model C: 0.85 (good)
+        - Model B vs Model C: 0.92 (borderline)
+        
+        Action: Remove Model B or replace with different algorithm
+        ```
+        
+        STEP 3: EXAMINE META-LEARNER WEIGHTS (Stacking)
+        
+        Balanced weights (healthy ensemble):
+        - Model A: 0.35
+        - Model B: 0.40
+        - Model C: 0.25
+        - All models contributing
+        
+        Imbalanced weights (problem):
+        - Model A: 0.85
+        - Model B: 0.10
+        - Model C: 0.05
+        - Action: Just use Model A, ensemble adds complexity without benefit
+        
+        STEP 4: VALIDATE DATA SPLITS
+        
+        Check for:
+        - Time-series leakage (future data in training)
+        - Group leakage (HCPs in both train and validation)
+        - Target leakage (features derived from target)
+        
+        Validation strategy for pharma:
+        - Time-series CV: Train on months 1-12, validate on 13-15, test on 16-18
+        - Block CV: Ensure HCP-level separation
+        - Stratified CV: Maintain specialty distribution
+        
+        STEP 5: ANALYZE ERROR PATTERNS
+        
+        Where does ensemble fail?
+        - Error by HCP specialty
+        - Error by prescription volume range
+        - Error by geography
+        - Error by time period
+        
+        Example analysis:
+        ```
+        Specialty Error Analysis:
+        - Primary Care: RMSE = 12 (good)
+        - Cardiology: RMSE = 18 (acceptable)
+        - Oncology: RMSE = 45 (poor!)
+        
+        Investigation: Oncology data sparse, need separate model
+        ```
+        
+        STEP 6: CHECK FOR OVERFITTING
+        
+        Signs:
+        - Training metrics much better than validation
+        - Large gap between CV and test performance
+        - Performance degrades in production
+        
+        Example:
+        ```
+        Training R²: 0.88
+        Validation R²: 0.75
+        Test R²: 0.71
+        Gap: 0.17 (concerning, indicates overfitting)
+        
+        Solutions:
+        - Reduce meta-learner complexity
+        - Add regularization
+        - Increase training data
+        - Reduce number of base models
+        ```
+        
+        STEP 7: INVESTIGATE FEATURE IMPORTANCE STABILITY
+        
+        Healthy ensemble:
+        - Top 10 features consistent across base models
+        - Ranking order may differ, but same features appear
+        - Stable across CV folds
+        
+        Problem ensemble:
+        - Different top features in each base model
+        - Top features change dramatically across folds
+        - Suggests insufficient data or poor features
+        
+        STEP 8: BUSINESS VALIDATION
+        
+        Questions:
+        - Do predictions make business sense?
+        - Are predictions actionable?
+        - What do subject matter experts think?
+        - Are there obvious errors?
+        
+        Example red flags:
+        - Predicting 1000 NRx for HCP who historically writes 5
+        - Negative predictions
+        - Predictions outside reasonable ranges
+        - Counter-intuitive feature importance
+        
+        COMMON ROOT CAUSES:
+        
+        1. Insufficient Training Data
+        - Symptoms: High variance, unstable feature importance
+        - Minimum: 10,000 samples for simple ensemble
+        - Solution: Collect more data or simplify model
+        
+        2. Poor Feature Engineering
+        - Symptoms: Low R² across all models, important features missing
+        - Solution: Add domain knowledge, create lag features, interactions
+        
+        3. Data Quality Issues
+        - Symptoms: Outliers, missing values, inconsistent definitions
+        - Check: Data profiling, outlier detection, missingness patterns
+        - Solution: Data cleaning pipeline, imputation strategy
+        
+        4. Model Mismatch
+        - Symptoms: Linear model performs best for non-linear problem
+        - Solution: Use appropriate algorithm family
+        
+        5. Hyperparameter Tuning
+        - Symptoms: Default parameters, no optimization
+        - Solution: Grid search or Bayesian optimization
+        
+        6. Concept Drift
+        - Symptoms: Model worked before, now failing
+        - Check: Performance over time, distribution shifts
+        - Solution: Retrain with recent data, add drift detection
+        
+        DIAGNOSTIC CHECKLIST:
+        
+        □ Base model performances documented
+        □ Ensemble improvement >3% over best base
+        □ Prediction correlations <0.9 between base models
+        □ Meta-learner weights reasonably balanced
+        □ Cross-validation strategy appropriate for data structure
+        □ No time-series or data leakage detected
+        □ Error analysis by key segments completed
+        □ Training-validation gap <10%
+        □ Feature importance stable across CV folds
+        □ Business validation completed
+        □ Predictions within reasonable ranges
+        □ Model complexity justified by performance gain
+        
+        DECISION MATRIX:
+        
+        Ensemble RMSE 35, Best Base RMSE 36:
+        - Improvement: 2.9%
+        - Decision: Not worth ensemble complexity, use best base model
+        
+        Ensemble RMSE 32, Best Base RMSE 36:
+        - Improvement: 11.1%
+        - Decision: Deploy ensemble if complexity manageable
+        
+        Ensemble RMSE 37, Best Base RMSE 36:
+        - Improvement: -2.8% (worse!)
+        - Decision: Debug ensemble, likely overfitting or lack of diversity
+        """,
+        "metadata": {
+            "diagnostic_steps": [
+                "baseline_comparison",
+                "diversity_check",
+                "meta_learner_weights",
+                "data_split_validation",
+                "error_pattern_analysis",
+                "overfitting_detection",
+                "feature_importance_stability",
+                "business_validation"
+            ],
+            "correlation_threshold": 0.9,
+            "minimum_improvement": "3-5%",
+            "overfitting_gap_threshold": 0.10
+        },
+        "keywords": ["troubleshooting", "debugging", "performance issues", "overfitting", "model diagnostics", "error analysis"]
+    },
+    
+    {
+        "doc_id": "DEBUG002",
+        "category": "troubleshooting",
+        "title": "Explaining Why Ensemble Outperforms or Underperforms",
+        "content": """
+        Framework for generating narrative explanations of ensemble performance 
+        relative to base models for business stakeholders.
+        
+        ENSEMBLE OUTPERFORMANCE EXPLANATIONS:
+        
+        Scenario 1: Complementary Strengths
+        
+        Data pattern:
+        - Random Forest RMSE: 40 (good at capturing non-linear patterns)
+        - XGBoost RMSE: 38 (excellent at sequential patterns)
+        - Linear Regression RMSE: 50 (captures linear trends)
+        - Ensemble RMSE: 32
+        
+        Explanation:
+        "The ensemble achieves 16% better accuracy than the best individual model 
+        (XGBoost) by combining complementary strengths:
+        
+        - XGBoost excels at capturing prescription trends over time
+        - Random Forest is more robust to outlier HCPs and unusual behaviors
+        - Linear Regression provides stable baseline predictions
+        
+        The meta-learner learns that:
+        - For high-volume HCPs: Trust XGBoost (weight 0.60)
+        - For volatile HCPs: Trust Random Forest (weight 0.55)
+        - For new HCPs with limited history: Trust Linear Model (weight 0.50)
+        
+        By selecting the right model for each prediction context, the ensemble 
+        reduces both bias (systematic errors) and variance (prediction instability)."
+        
+        Scenario 2: Error Averaging
+        
+        Data pattern:
+        - All base models RMSE 40-42
+        - Base model errors uncorrelated
+        - Ensemble RMSE: 36
+        
+        Explanation:
+        "Each base model makes different errors on different HCPs. When we average 
+        their predictions, random errors cancel out while systematic patterns reinforce.
+        
+        Example HCP:
+        - Actual NRx: 50
+        - Random Forest predicts: 45 (error: -5)
+        - XGBoost predicts: 55 (error: +5)
+        - LightGBM predicts: 48 (error: -2)
+        - Ensemble average: 49.3 (error: -0.7)
+        
+        The ensemble reduces error by 86% for this HCP through intelligent averaging."
+        
+        Scenario 3: Interaction Coverage
+        
+        Data pattern:
+        - Simple models miss complex interactions
+        - Ensemble captures specialty × marketing × history interactions
+        
+        Explanation:
+        "HCP prescribing behavior involves complex interactions between specialty, 
+        marketing touchpoints, and historical prescribing patterns. No single model 
+        type captures all interaction patterns:
+        
+        - Trees capture: Specialty-specific call response curves
+        - Boosting captures: Marketing momentum effects over time
+        - Linear model captures: Overall market trends
+        
+        The ensemble combines these complementary interaction patterns, improving 
+        predictions especially for:
+        - Primary care HCPs with high sample exposure (+12% accuracy)
+        - Cardiologists with recent marketing intensity (+15% accuracy)
+        - New prescribers with limited history (+20% accuracy)"
+        
+        ENSEMBLE UNDERPERFORMANCE EXPLANATIONS:
+        
+        Scenario 1: Lack of Diversity
+        
+        Data pattern:
+        - All base models very similar (correlation >0.95)
+        - Ensemble RMSE = 40, Best base RMSE = 40
+        
+        Explanation:
+        "The ensemble shows minimal improvement over individual models because all 
+        base models (XGBoost, LightGBM, CatBoost) are variants of gradient boosting. 
+        They make the same errors on the same HCPs.
+        
+        Prediction correlations:
+        - XGBoost vs LightGBM: 0.97
+        - XGBoost vs CatBoost: 0.96
+        - LightGBM vs CatBoost: 0.98
+        
+        With such high correlation, averaging provides no benefit. The ensemble adds 
+        complexity without improving accuracy.
+        
+        Recommendation: Replace two models with different algorithm types (Random Forest, 
+        Linear Regression, or Neural Network) to increase diversity."
+        
+        Scenario 2: One Dominant Model
+        
+        Data pattern:
+        - XGBoost RMSE: 35
+        - Random Forest RMSE: 60
+        - Linear Regression RMSE: 75
+        - Ensemble RMSE: 38
+        
+        Explanation:
+        "The ensemble performs worse than using XGBoost alone because the weak base 
+        models (Random Forest and Linear Regression) add noise rather than signal.
+        
+        Meta-learner learned weights:
+        - XGBoost: 0.82
+        - Random Forest: 0.12
+        - Linear Regression: 0.06
+        
+        The weak models contribute 18% to final predictions but have error rates 2x 
+        higher than XGBoost, degrading overall performance.
+        
+        Recommendation: Remove weak models or improve them to within 20% of XGBoost 
+        performance before including in ensemble."
+        
+        Scenario 3: Overfitting
+        
+        Data pattern:
+        - Validation R²: 0.85
+        - Test R²: 0.68
+        - Gap: 0.17
+        
+        Explanation:
+        "The ensemble overfit to the validation set, learning patterns that don't 
+        generalize to new data.
+        
+        Contributing factors:
+        1. Complex meta-learner (neural network with 3 hidden layers)
+        2. Small validation set (2,000 HCPs)
+        3. Many base models (7) relative to validation size
+        
+        The meta-learner learned to exploit validation set quirks rather than true 
+        predictive patterns.
+        
+        Evidence:
+        - Meta-learner weights vary wildly across CV folds
+        - Top features different in each fold
+        - Performance cliff when deployed to production
+        
+        Recommendation: Use simpler meta-learner (Ridge Regression), increase validation 
+        set size, or reduce number of base models to 3-4."
+        
+        Scenario 4: Insufficient Data
+        
+        Data pattern:
+        - Training sample: 5,000 HCPs
+        - 5 base models + meta-learner
+        - High variance across CV folds
+        
+        Explanation:
+        "The ensemble has insufficient data to reliably train multiple models plus a 
+        meta-learner.
+        
+        Cross-validation results:
+        - Fold 1 R²: 0.72
+        - Fold 2 R²: 0.58
+        - Fold 3 R²: 0.81
+        - Fold 4 R²: 0.64
+        - Standard deviation: 0.10 (high!)
+        
+        With only 1,000 HCPs per fold, we can't robustly estimate model parameters. 
+        Each fold gives different feature importance rankings and meta-learner weights.
+        
+        Rule of thumb: Need 10,000+ observations for stable ensemble training.
+        
+        Recommendation: Use single well-tuned model (XGBoost or Random Forest) until 
+        more data collected, or simplify ensemble to 2-3 base models."
+        
+        NARRATIVE TEMPLATE FOR BUSINESS STAKEHOLDERS:
+        
+        "The [ensemble/base model] achieved [metric value] on [use case], representing 
+        a [X%] [improvement/degradation] compared to [baseline].
+        
+        This performance difference is primarily due to [root cause]:
+        
+        [Specific technical explanation in business terms]
+        
+        Key supporting evidence:
+        - [Quantitative finding 1]
+        - [Quantitative finding 2]
+        - [Quantitative finding 3]
+        
+        Business impact:
+        [Translation to business outcomes - prescriptions, revenue, targeting efficiency]
+        
+        Recommendation:
+        [Clear action - deploy, iterate, or abandon ensemble]
+        
+        Confidence level: [High/Medium/Low] based on [validation approach]"
+        
+        EXAMPLE COMPLETE EXPLANATION:
+        
+        "The NRx forecasting ensemble achieved RMSE of 32 prescriptions/month, 
+        representing an 11% improvement over our best individual model (XGBoost at 36 RMSE).
+        
+        This improvement is primarily due to complementary model strengths combined with 
+        intelligent context-aware weighting:
+        
+        XGBoost excels at identifying prescription trends and momentum but struggles with 
+        volatile HCPs who have irregular prescribing patterns. Random Forest is more 
+        robust to these outliers but less accurate for stable trendlines. The ensemble 
+        meta-learner learns to trust XGBoost for stable HCPs (60% of portfolio) and 
+        Random Forest for volatile HCPs (40% of portfolio).
+        
+        Key supporting evidence:
+        - Base model prediction correlation: 0.76 (good diversity)
+        - Meta-learner weights balanced: 0.55 XGBoost, 0.45 Random Forest
+        - Improvement consistent across 5 CV folds (RMSE 31-33)
+        - Test set performance matches validation (no overfitting)
+        
+        Business impact:
+        11% forecast accuracy improvement translates to:
+        - $2.3M reduction in forecast error (vs actual prescriptions)
+        - 15% improvement in territory allocation efficiency
+        - Higher confidence in quarterly guidance to senior leadership
+        
+        Recommendation:
+        Deploy ensemble to production for Q1 2025 forecasting cycle. Continue monitoring 
+        individual base model performance monthly.
+        
+        Confidence level: High - validated across multiple time periods, geographies, 
+        and HCP segments with consistent improvement."
+        """,
+        "metadata": {
+            "explanation_types": [
+                "complementary_strengths",
+                "error_averaging",
+                "interaction_coverage",
+                "lack_of_diversity",
+                "one_dominant_model",
+                "overfitting",
+                "insufficient_data"
+            ],
+            "narrative_components": [
+                "performance_summary",
+                "root_cause",
+                "technical_explanation",
+                "supporting_evidence",
+                "business_impact",
+                "recommendation",
+                "confidence_level"
+            ]
+        },
+        "keywords": ["performance explanation", "ensemble advantage", "root cause analysis", "business communication", "narrative generation"]
+    }
+]
 
-DOMAIN_KNOWLEDGE = [
-    # Document 1: HCP Targeting Fundamentals
-    {
-        "id": "domain_hcp_targeting_001",
-        "category": "domain_knowledge",
-        "subcategory": "hcp_targeting",
-        "title": "Healthcare Professional (HCP) Targeting and Segmentation",
-        "content": """
-        HCP targeting is the foundation of pharmaceutical commercial strategy. Understanding
-        how to identify, segment, and prioritize healthcare professionals drives sales effectiveness
-        and ROI optimization.
-        
-        ## Core Concepts
-        
-        **HCP Definition**: Healthcare professionals who prescribe medications, including:
-        - Physicians (MDs, DOs) across all specialties
-        - Nurse Practitioners (NPs) with prescribing authority
-        - Physician Assistants (PAs) with prescribing authority
-        - Specialists vs Generalists (Primary Care)
-        
-        **Segmentation Approaches**:
-        
-        1. **Value-Based Tiering**:
-           - HIGH/TIER_1: Top 20% of prescribers (often drive 60-80% of volume)
-           - MEDIUM/TIER_2: Middle 30% (consistent moderate prescribers)
-           - LOW/TIER_3: Bottom 50% (low volume, occasional prescribers)
-           
-        2. **Decile Analysis**:
-           - Rank all HCPs by prescription volume into 10 equal groups
-           - Top decile (10%) typically generates 30-40% of total prescriptions
-           - Used for resource allocation and targeting strategies
-        
-        3. **Behavioral Segmentation**:
-           - Early Adopters: Quick to try new therapies (5-10% of market)
-           - Majority: Wait for evidence accumulation (70-80%)
-           - Laggards: Very slow to change prescribing (10-15%)
-           - Non-prescribers: Don't prescribe in therapeutic area
-        
-        4. **Specialty-Based Segmentation**:
-           - Specialists: Higher volume in specific therapeutic areas
-           - Primary Care: Broader patient base, lower per-patient complexity
-           - Academic: Teaching hospitals, research-oriented
-           - Community: Private practice, patient satisfaction focus
-        
-        ## Key Metrics
-        
-        **Prescription Metrics**:
-        - **TRx (Total Prescriptions)**: New prescriptions + refills
-        - **NRx (New Prescriptions)**: First-time prescriptions only (leading indicator)
-        - **NBRx (New-to-Brand)**: Patients switching from competitor
-        - **Refills**: Continuation prescriptions (indicates satisfaction/adherence)
-        
-        **Market Share Metrics**:
-        - **Prescriber Share**: Percentage of HCPs who have ever prescribed your brand
-        - **Share of Voice (SOV)**: Your prescriptions / total category prescriptions
-        - **Fair Share**: Expected share based on market factors
-        - **Excess Share**: Actual share - fair share (indicates targeting effectiveness)
-        
-        **Targeting Metrics**:
-        - **Reach**: Percentage of target HCPs contacted
-        - **Frequency**: Average number of contacts per HCP
-        - **Coverage**: Percentage of total prescription volume covered by targets
-        
-        ## Business Context: The 80/20 Rule
-        
-        Pharmaceutical sales follow extreme Pareto distributions:
-        - 20% of HCPs generate 80% of prescriptions
-        - Top 10% of HCPs can generate 50-60% of volume
-        - Top 1% (super-prescribers) can drive 20-30% of market
-        
-        **Implications**:
-        - Sales resources must concentrate on high-value HCPs
-        - Missing one TIER_1 HCP = losing 50-100 TIER_3 HCPs worth of volume
-        - Territory alignment critical: ensure no TIER_1 HCP uncovered
-        
-        ## Prescribing Behavior Patterns
-        
-        **Specialty Differences**:
-        - Cardiologists: Evidence-driven, focus on outcomes (mortality, CV events)
-        - Endocrinologists: Metrics-focused (A1C, weight, glucose control)
-        - Primary Care: Safety-first, patient convenience, formulary considerations
-        - Oncologists: Guidelines-driven, multidisciplinary team decisions
-        
-        **Experience Level**:
-        - Young physicians (0-5 years): More open to new therapies, digitally engaged
-        - Mid-career (6-15 years): Established patterns, selective adoption
-        - Senior (15+ years): Very set patterns, relationship-driven, skeptical of change
-        
-        **Practice Setting**:
-        - Academic medical centers: Research participation, formulary restrictions, resident influence
-        - Large group practices: Standardized protocols, group purchasing, EHR integration
-        - Solo/small practices: More autonomy, personal relationships matter, cost-conscious
-        
-        ## Targeting Challenges
-        
-        1. **Access Restrictions**: No-see policies, office staff gatekeepers, administrative burden
-        2. **Digital Fatigue**: Email overload, declining response rates
-        3. **Competitive Noise**: Multiple reps from different companies competing for attention
-        4. **Regulatory Constraints**: Anti-kickback laws, sunshine act reporting, promotional limits
-        5. **Changing Demographics**: Younger HCPs prefer digital engagement over in-person
-        
-        ## Success Factors
-        
-        **High-Performing Targeting Strategies**:
-        - Multichannel coordination: Email + call + sample + event
-        - Personalization: Message tailored to specialty, practice type, patient demographics
-        - Optimal frequency: 2-3 meaningful touchpoints per month (not spam)
-        - Value delivery: Clinical data, peer comparisons, practice support
-        - Relationship building: Consistency in rep assignment, long-term engagement
-        
-        **Poor Strategies** (to avoid):
-        - Spray and pray: Equal treatment of all HCPs regardless of potential
-        - High frequency, low value: Excessive calls with no new information
-        - Generic messaging: Same message to cardiologist and primary care
-        - Transactional approach: Only contact when launching new product
-        """,
-        "tags": ["HCP", "targeting", "segmentation", "prescribing_behavior", "TRx", "NRx", "market_share"],
-        "use_cases": ["HCP_engagement", "NRx_forecasting", "messaging_optimization"]
-    },
+
+# ========================================================================
+# HELPER FUNCTIONS FOR VECTOR DB INGESTION
+# ========================================================================
+
+def get_documents_by_category(category: str) -> list:
+    """
+    Retrieve all documents for a specific category.
     
-    # Document 2: Prescription Forecasting
-    {
-        "id": "domain_prescription_forecasting_001",
-        "category": "domain_knowledge",
-        "subcategory": "forecasting",
-        "title": "Prescription Volume Forecasting in Pharmaceutical Commercial",
-        "content": """
-        Prescription forecasting predicts future prescription volumes to support commercial planning,
-        resource allocation, and financial projections. Accuracy is critical for multi-million
-        dollar decisions in sales force sizing, inventory, and marketing spend.
-        
-        ## Business Context
-        
-        **Why Forecasting Matters**:
-        - **Financial Planning**: Revenue projections for Wall Street guidance
-        - **Sales Force Sizing**: How many reps needed to achieve targets?
-        - **Territory Design**: Which geographies need coverage?
-        - **Marketing Budget**: How much to spend on campaigns?
-        - **Supply Chain**: Manufacturing and inventory planning
-        - **Quota Setting**: Realistic but challenging targets for reps
-        
-        **Forecast Horizons**:
-        - Short-term (1-3 months): Tactical execution, rep targeting
-        - Medium-term (4-12 months): Budget planning, campaign design
-        - Long-term (1-5 years): Strategic planning, launches, lifecycle management
-        
-        ## Forecasting Components
-        
-        **Time Series Patterns**:
-        
-        1. **Trend**: Long-term direction (growth, decline, plateau)
-           - Mature brands: Flat or declining trend (generic erosion)
-           - Growth brands: Positive trend (market expansion, share gains)
-           - New launches: Steep S-curve (slow start, rapid growth, plateau)
-        
-        2. **Seasonality**: Recurring patterns within year
-           - Respiratory drugs: Peak flu season (Nov-Mar)
-           - Allergy medications: Spring peak (Apr-Jun)
-           - Dermatology: Summer peak (skin conditions visible)
-           - End-of-year: Deductible resets, holiday lull
-        
-        3. **Cyclical**: Multi-year patterns
-           - Economic cycles: Recession reduces elective prescriptions
-           - Insurance cycles: Formulary changes every 2-3 years
-           - Competitive cycles: Launches, genericization waves
-        
-        4. **Random**: Unpredictable variation
-           - Unusually severe flu season
-           - Sudden safety warnings
-           - Celebrity endorsements
-           - Viral social media events
-        
-        ## Key Features for Forecasting
-        
-        **Historical Prescription Data**:
-        - Lagged TRx/NRx (3, 6, 12 months prior)
-        - Year-over-year growth rates
-        - Moving averages (smooth out noise)
-        - Exponentially weighted averages (recent data weighted higher)
-        
-        **HCP Characteristics**:
-        - Specialty (cardiologists prescribe more CV drugs)
-        - Patient volume (high-volume HCPs = more prescriptions)
-        - Years in practice (established vs new physicians)
-        - Geography (urban vs rural, regional variations)
-        - Academic affiliation (teaching vs community)
-        
-        **Promotional Activity**:
-        - Sales call frequency (more calls = more prescriptions, up to saturation)
-        - Email engagement (open rates, click rates)
-        - Sample distribution (free trials drive adoption)
-        - Event attendance (speaker programs, conferences)
-        - Digital advertising impressions
-        
-        **Market Dynamics**:
-        - Competitor market share (competitive pressure)
-        - New competitor launches (erosion risk)
-        - Generic entry (catastrophic decline for brands)
-        - Formulary status (preferred, non-preferred, prior auth)
-        - Pricing changes (copay increases reduce demand)
-        
-        **External Factors**:
-        - Clinical guidelines (new recommendations drive shifts)
-        - Safety warnings (black box warnings crash prescriptions)
-        - Published studies (positive RCTs boost prescribing)
-        - Reimbursement policy (Medicare/Medicaid changes)
-        - Disease prevalence (obesity epidemic increases diabetes drugs)
-        
-        ## Forecasting Challenges
-        
-        **Data Quality Issues**:
-        - Missing data (incomplete call tracking)
-        - Delayed reporting (2-4 week lag in prescription data)
-        - Data errors (system glitches, duplicate records)
-        - Sample bias (only captures retail, not hospital)
-        
-        **External Shocks**:
-        - Unexpected competitor launches
-        - Safety warnings (drug withdrawals)
-        - Pandemic effects (COVID-19 disrupted routine prescribing)
-        - Regulatory changes (sudden formulary restrictions)
-        - Supply disruptions (shortages redirect to alternatives)
-        
-        **Model Limitations**:
-        - Overfitting to historical patterns (market changed)
-        - Concept drift (relationship between features and prescriptions changed)
-        - Black swan events (unpredictable by definition)
-        - Attribution errors (correlation vs causation in promotional impact)
-        
-        ## Accuracy Expectations
-        
-        **Typical Performance** (MAPE - Mean Absolute Percentage Error):
-        - Mature stable brands: 8-15% error
-        - Growing brands: 15-25% error
-        - New launches: 30-50% error (high uncertainty)
-        - Generic entry: Nearly impossible to forecast precisely
-        
-        **HCP-Level vs Aggregate**:
-        - Individual HCP forecasts: ±30-50% error (noisy)
-        - Territory-level forecasts: ±15-25% error (averaging effect)
-        - National-level forecasts: ±8-15% error (law of large numbers)
-        
-        ## Business Translation
-        
-        **Example**: NRx forecast for 10,000 HCPs
-        - Model predicts: 50 ±10 NRx per HCP per month
-        - Total forecast: 500,000 NRx/month (±100,000 range)
-        - At $50 revenue per Rx: $25M monthly revenue (±$5M)
-        - Annual: $300M (±$60M range)
-        
-        **Impact of Accuracy**:
-        - 5% RMSE improvement = $15M better annual forecast precision
-        - Prevents over-manufacturing (inventory waste)
-        - Prevents under-manufacturing (stockouts, lost sales)
-        - Enables optimal sales force sizing (avoid over/under-staffing)
-        
-        ## Use in Commercial Decisions
-        
-        **Sales Targeting**: Forecast identifies high-potential HCPs
-        - HCP predicted 100 NRx/month → High priority target
-        - HCP predicted 5 NRx/month → Low priority (limited resources)
-        
-        **Campaign Planning**: Forecast quantifies promotional impact
-        - If 10% of HCPs targeted with campaign
-        - Expected lift: +20 NRx per HCP per month
-        - ROI: (20 NRx × $50 × 1000 HCPs) / campaign cost
-        
-        **Territory Alignment**: Forecast balances workload
-        - Target: Each rep covers $5M annual forecast potential
-        - Adjust boundaries to equalize opportunity
-        - Ensures fair quota setting
-        """,
-        "tags": ["forecasting", "TRx", "NRx", "time_series", "prediction", "accuracy", "business_planning"],
-        "use_cases": ["NRx_forecasting", "model_drift_detection"]
-    },
+    Args:
+        category: One of 'use_case', 'ensemble_method', 'metric', 
+                  'business_context', 'features', 'troubleshooting'
     
-    # Document 3: Marketing Response Modeling
-    {
-        "id": "domain_marketing_response_001",
-        "category": "domain_knowledge",
-        "subcategory": "marketing",
-        "title": "Marketing Response and Campaign Effectiveness in Pharma",
-        "content": """
-        Marketing response modeling predicts and measures how HCPs respond to promotional
-        activities. The goal is maximizing ROI by targeting the right HCPs with the right
-        messages through the right channels.
-        
-        ## The Fundamental Challenge
-        
-        **Not all HCPs are created equal in response to promotion**:
-        
-        - **Persuadables** (20-30%): Will change behavior if promoted → TARGET THESE
-        - **Sure Things** (10-20%): Already prescribing maximally → Don't waste resources
-        - **Lost Causes** (40-50%): Won't change regardless of promotion → Avoid
-        - **Do Not Disturbs** (<5%): Negative response to promotion → Definitely avoid
-        
-        **Traditional mistake**: Treating all HCPs equally (spray and pray)
-        **Optimal strategy**: Focus limited resources on persuadables
-        
-        ## Response Types and Measurement
-        
-        **Engagement Responses** (Behavioral):
-        - Email opened (typically 10-20% of recipients)
-        - Email clicked (typically 2-5% of recipients)
-        - Call answered/accepted (30-50% of attempts)
-        - Event attended (5-15% of invitees)
-        - Website visited after promotion
-        - Sample accepted and used
-        
-        **Commercial Responses** (Outcome):
-        - Prescription increase (10-20% of engaged HCPs)
-        - New patient starts (conversion to brand)
-        - Share of voice increase (prescribing more vs competitors)
-        - Patient volume increase (treating more patients in category)
-        - Persistence improvement (patients stay on therapy longer)
-        
-        **Time to Response**:
-        - Immediate (1-7 days): Email open, call engagement
-        - Short-term (1-4 weeks): New patient trials
-        - Medium-term (1-3 months): Established prescribing pattern change
-        - Long-term (3-12 months): Practice-wide protocol adoption
-        
-        ## Campaign Types and Effectiveness
-        
-        **1. Email Campaigns**:
-        - **Strengths**: Low cost ($0.05-0.50 per email), high reach, measurable
-        - **Weaknesses**: Low engagement (80-90% never open), easy to ignore
-        - **Best for**: High-volume awareness, specialist targeting, digital-savvy HCPs
-        - **Typical ROI**: 3-5x (for well-targeted campaigns)
-        
-        **2. Sales Representative Calls**:
-        - **Strengths**: Personal relationship, two-way dialogue, can overcome objections
-        - **Weaknesses**: Expensive ($150-300 per call), access declining, limited reach
-        - **Best for**: High-value targets, complex messages, relationship building
-        - **Typical ROI**: 5-10x (when targeted properly)
-        
-        **3. Events (Speaker Programs, Dinners)**:
-        - **Strengths**: High engagement, peer influence, memorable experience
-        - **Weaknesses**: Very expensive ($500-2000 per attendee), low attendance rates
-        - **Best for**: Key opinion leaders, specialty audiences, launch campaigns
-        - **Typical ROI**: 2-4x (highly variable by event quality)
-        
-        **4. Sampling Programs**:
-        - **Strengths**: Trial removes prescribing barriers, patient experience drives loyalty
-        - **Weaknesses**: Expensive (drug cost + distribution), potential waste
-        - **Best for**: New patient acquisition, switching campaigns, formulary obstacles
-        - **Typical ROI**: 4-8x (if samples reach right patients)
-        
-        **5. Digital Advertising**:
-        - **Strengths**: Broad reach, retargeting capability, cost-effective impressions
-        - **Weaknesses**: Banner blindness, attribution challenges, passive engagement
-        - **Best for**: Awareness building, reinforcement, younger HCP audiences
-        - **Typical ROI**: 2-3x (lower but highly scalable)
-        
-        ## Key Response Drivers
-        
-        **HCP Factors**:
-        - Historical engagement rate (past behavior predicts future)
-        - Current prescribing level (non-prescribers hardest to convert)
-        - Specialty match (relevance to practice)
-        - Patient volume (capacity to prescribe more)
-        - Practice setting (academic vs community)
-        - Communication preferences (email vs call vs event)
-        
-        **Message Factors**:
-        - Relevance to specialty (CV outcomes for cardiologists)
-        - Evidence quality (Level 1 RCT vs observational)
-        - Newness (novel information vs repetition)
-        - Format (video vs text, interactive vs passive)
-        - Sender credibility (peer vs pharma rep)
-        
-        **Timing Factors**:
-        - Contact frequency (optimal 2-3x per month, saturation at 5+)
-        - Days since last contact (sweet spot: 14-30 days)
-        - Day of week (Tuesday-Thursday best for email)
-        - Time of day (10am-2pm best for calls)
-        - Season (avoid holidays, summer vacations)
-        
-        **Competitive Factors**:
-        - Competitor promotional intensity (noise level)
-        - Recent competitor launches (defensive positioning needed)
-        - Market share dynamics (leadership vs challenger strategies)
-        
-        ## Attribution Challenges
-        
-        **The Problem**: HCPs receive multiple touchpoints, which one caused response?
-        
-        **Attribution Models**:
-        - **First-touch**: Credit to first interaction (undervalues nurturing)
-        - **Last-touch**: Credit to final interaction before prescription (ignores journey)
-        - **Linear**: Equal credit to all touchpoints (oversimplifies)
-        - **Time-decay**: More credit to recent interactions (reasonable compromise)
-        - **Data-driven**: ML model learns optimal attribution (best but complex)
-        
-        **Multi-Channel Synergies**:
-        - Email + Call: 1.5-2x lift vs either alone
-        - Call + Sample: 2-3x lift (trial removes barriers)
-        - Email + Event: 1.3-1.7x lift (reinforcement effect)
-        - Digital + Call: 1.2-1.5x lift (awareness + action)
-        
-        ## Diminishing Returns and Saturation
-        
-        **Promotional Frequency Curve**:
-        - 0 contacts: Baseline prescribing
-        - 1 contact/month: +15% lift
-        - 2 contacts/month: +25% lift (optimal for most)
-        - 3 contacts/month: +30% lift (marginal gain)
-        - 4+ contacts/month: +30-35% lift (saturation, no additional benefit)
-        - 6+ contacts/month: Potential negative (annoyance, opt-outs)
-        
-        **Channel-Specific Saturation**:
-        - Email: Can tolerate 2-3 per month
-        - Calls: Maximum 3-4 per month
-        - Events: 1-2 per quarter
-        - Samples: Ongoing (as needed for patients)
-        
-        ## ROI Calculation Framework
-        
-        **Campaign ROI Formula**:
-        ROI = (Incremental Revenue - Campaign Cost) / Campaign Cost
-        
-        **Example - Email Campaign**:
-        - Universe: 10,000 HCPs
-        - Email cost: $5,000 (including design, deployment)
-        - Response rate: 15% engage
-        - Conversion rate: 20% of engaged increase prescriptions
-        - Incremental prescriptions: 10,000 × 0.15 × 0.20 × 5 NRx = 1,500 NRx
-        - Revenue: 1,500 × $50 = $75,000
-        - ROI: ($75,000 - $5,000) / $5,000 = 14x
-        
-        **Example - Sales Call Campaign**:
-        - Targeted HCPs: 500 (high-value segment)
-        - Calls: 3 per HCP over quarter = 1,500 total calls
-        - Cost: 1,500 × $200 = $300,000
-        - Response rate: 40% increase prescriptions
-        - Incremental prescriptions: 500 × 0.40 × 15 NRx = 3,000 NRx
-        - Revenue: 3,000 × $50 = $150,000
-        - ROI: ($150,000 - $300,000) / $300,000 = -0.5x (NEGATIVE!)
-        
-        **Key Insight**: High-touch is NOT always better. ROI depends on targeting precision.
-        
-        ## A/B Testing Best Practices
-        
-        **Randomization**:
-        - Split similar HCPs into treatment vs control
-        - Control for confounders (specialty, volume, geography)
-        - Ensure sufficient sample size (power analysis)
-        
-        **What to Test**:
-        - Message content (clinical data vs patient stories)
-        - Channel (email vs call vs event)
-        - Frequency (1x vs 2x vs 3x per month)
-        - Timing (day of week, time of day)
-        - Format (video vs text, long vs short)
-        
-        **Measurement Period**:
-        - Short campaigns: 1-3 month measurement window
-        - Long campaigns: 3-6 month measurement window
-        - Account for lag (prescriptions take time to reflect behavior change)
-        
-        ## Business Impact
-        
-        **Optimized vs Non-Optimized Campaigns**:
-        - Traditional spray-and-pray: 10% response rate, 2x ROI
-        - Model-optimized targeting: 25% response rate (targeting persuadables), 6x ROI
-        - Net impact: 3x improvement in marketing effectiveness
-        - At $10M annual marketing budget: $20M additional revenue from optimization
-        """,
-        "tags": ["marketing", "campaigns", "response", "ROI", "engagement", "targeting", "channels"],
-        "use_cases": ["HCP_engagement", "messaging_optimization", "NRx_forecasting"]
-    },
+    Returns:
+        List of document dictionaries
+    """
+    return [doc for doc in VECTOR_DB_DOCUMENTS if doc['category'] == category]
+
+
+def get_document_by_id(doc_id: str) -> dict:
+    """
+    Retrieve a specific document by ID.
     
-    # Document 4: Feature Importance and Driver Analysis
-    {
-        "id": "domain_feature_importance_001",
-        "category": "domain_knowledge",
-        "subcategory": "feature_analysis",
-        "title": "Understanding Prediction Drivers and Feature Importance",
-        "content": """
-        Feature importance analysis answers the critical question: "WHY does the model predict
-        what it predicts?" Understanding drivers is essential for translating model outputs
-        into actionable business strategies.
-        
-        ## Why Feature Importance Matters
-        
-        **Business Value**:
-        - **Strategy**: Know which levers to pull (focus on controllable high-impact features)
-        - **Resource Allocation**: Invest in activities that drive outcomes
-        - **Message Development**: Emphasize features that influence prescribing
-        - **Targeting Rules**: Create business rules from data patterns
-        - **Model Validation**: Ensures model learns sensible relationships
-        - **Stakeholder Buy-in**: Explainable models build trust
-        
-        **Example Impact**:
-        If model shows "call_frequency" is rank 2 driver:
-        → Actionable: Increase calls to high-potential HCPs
-        If model shows "hcp_age" is rank 2 driver:
-        → Not actionable: Can't change HCP age, but can segment strategy by age
-        
-        ##Types of Feature Importance
-        
-        **1. Gain/Gini Importance** (Tree-based models):
-        - Measures cumulative improvement in prediction when splitting on feature
-        - Interpretation: "How much does this feature improve model accuracy?"
-        - Strengths: Fast to calculate, available in all tree models
-        - Weaknesses: Biased toward high-cardinality features (many unique values)
-        - Best for: Quick insights, relative ranking of features
-        
-        **2. Permutation Importance**:
-        - Measures performance drop when feature values randomly shuffled
-        - Interpretation: "How much does model rely on this feature?"
-        - Strengths: Model-agnostic, unbiased
-        - Weaknesses: Slow for large datasets, unstable with correlated features
-        - Best for: Confirming importance of suspicious features
-        
-        **3. SHAP (Shapley Values)**:
-        - Measures average marginal contribution of feature across all predictions
-        - Interpretation: "How much does this feature contribute to each prediction?"
-        - Strengths: Theoretically sound, shows direction (positive/negative), handles interactions
-        - Weaknesses: Computationally expensive, complex to explain to stakeholders
-        - Best for: Detailed analysis, individual prediction explanations
-        
-        **4. Coefficient Magnitude** (Linear models):
-        - Absolute value of regression coefficients
-        - Interpretation: "Linear effect size per unit change"
-        - Strengths: Simple, interpretable, shows direction
-        - Weaknesses: Only captures linear relationships, sensitive to scaling
-        - Best for: Simple models, linear relationships
-        
-        ## Common Pharma Feature Patterns
-        
-        **Historical Behavior Features** (Usually Top 5):
-        - lagged_nrx_3mo: Past 3-month prescription average
-        - lagged_nrx_6mo: Past 6-month prescription average
-        - nrx_trend: Month-over-month growth rate
-        - peak_nrx_ever: Historical maximum (prescribing potential)
-        
-        **Why Important**: Past behavior is strongest predictor of future behavior
-        
-        **HCP Characteristic Features**:
-        - hcp_specialty: Different specialties have different prescribing patterns
-        - patient_volume: High-volume HCPs prescribe more (capacity)
-        - years_in_practice: Experience correlates with prescribing patterns
-        - geography: Urban vs rural, regional variations
-        - academic_affiliation: Teaching vs community practice differences
-        
-        **Why Important**: Segment-specific strategies needed (one size doesn't fit all)
-        
-        **Promotional Activity Features**:
-        - call_frequency: Number of sales rep visits (controllable!)
-        - email_open_rate: Engagement indicator (digital responsiveness)
-        - samples_provided: Trial removes barriers to prescribing
-        - event_attendance: High-touch engagement signal
-        
-        **Why Important**: These are ACTIONABLE - we can directly influence them
-        
-        **Market Context Features**:
-        - competitor_market_share: Competitive pressure level
-        - formulary_tier: Reimbursement favorability
-        - days_since_launch: Product maturity/familiarity
-        - clinical_guideline_recommendation: External validation
-        
-        **Why Important**: External factors beyond our control but critical for realistic expectations
-        
-        ## Feature Interactions
-        
-        **Synergistic Interactions** (1 + 1 = 3):
-        - specialty × patient_volume: High-volume specialists are MUCH more valuable
-        - call_frequency × email_open_rate: Multi-channel synergy
-        - samples × formulary_tier: Samples overcome cost barriers
-        - academic_affiliation × years_in_practice: Senior academic leaders are influencers
-        
-        **Antagonistic Interactions** (1 + 1 = 1):
-        - high_call_frequency × low_email_opens: Engagement fatigue cancels out
-        - specialty_mismatch × message_content: Wrong message reduces all impact
-        - high_competitor_share × low_promotion: Can't overcome entrenched competition cheaply
-        
-        **Threshold Effects**:
-        - Minimum call frequency (2/month) needed for impact, below that = zero effect
-        - Formulary tier: No amount of promotion overcomes non-covered status
-        - Patient volume floor: Very low-volume HCPs can't prescribe much regardless
-        
-        ## Interpreting Feature Importance Rankings
-        
-        **Example Rankings and Meaning**:
-        
-        Rank 1: lagged_nrx_6mo (Importance: 0.30)
-        → Meaning: Past prescribing drives 30% of prediction power
-        → Business insight: Focus on HCPs with established prescribing patterns
-        → Action: Nurture existing prescribers, prevent erosion
-        
-        Rank 2: hcp_specialty (Importance: 0.18)
-        → Meaning: Specialty explains 18% of variance
-        → Business insight: Different specialties need different strategies
-        → Action: Develop specialty-specific messages and targets
-        
-        Rank 3: call_frequency (Importance: 0.15)
-        → Meaning: Promotional calls drive 15% of prediction
-        → Business insight: Calls matter! But not overwhelming (only 15%)
-        → Action: Optimize call allocation, don't overdo it
-        
-        Rank 4: patient_volume (Importance: 0.12)
-        → Meaning: High-volume HCPs can prescribe more
-        → Business insight: Capacity constraints matter
-        → Action: Prioritize high-volume HCPs in targeting
-        
-        Rank 5: competitor_market_share (Importance: 0.10)
-        → Meaning: Competitive dynamics influence prescribing
-        → Business insight: Harder to grow in competitive markets
-        → Action: Increase share-of-voice in competitive territories
-        
-        Ranks 6-20: Various features (Importance: 0.15 combined)
-        → Meaning: Many small factors contribute
-        → Business insight: No silver bullet, multiple levers matter
-        
-        ## Translating to Business Action
-        
-        **Framework**:
-        1. Identify top 10 features
-        2. Classify: Controllable vs Non-controllable
-        3. For controllable: What action increases/optimizes this feature?
-        4. For non-controllable: How do we segment/adapt strategy?
-        5. Estimate ROI of actions
-        6. Prioritize high-impact, low-cost actions
-        
-        **Example Translation**:
-        
-        Feature: call_frequency (Rank 3, controllable)
-        - Current state: Average 2 calls/HCP/month across all HCPs
-        - Opportunity: Model shows optimal frequency is 3-4 calls for high-potential HCPs
-        - Action: Increase calls to top 20% HCPs from 2 to 4 per month
-        - Cost: 2,000 HCPs × 2 extra calls × $200 = $800K
-        - Benefit: 2,000 HCPs × 10 incremental NRx × $50 = $1M
-        - ROI: ($1M - $800K) / $800K = 25%
-        - Decision: Implement
-        
-        Feature: hcp_specialty (Rank 2, non-controllable)
-        - Current state: Same message to all specialties
-        - Opportunity: Cardiologists respond to CV outcomes, PCPs to safety
-        - Action: Develop 3 specialty-specific message variants
-        - Cost: $50K message development + $20K targeting system
-        - Benefit: 15% improvement in engagement rate × baseline impact
-        - ROI: Estimated
+    Args:
+        doc_id: Document identifier (e.g., 'UC001', 'ENS001')
+    
+    Returns:
+        Document dictionary or None if not found
+    """
+    for doc in VECTOR_DB_DOCUMENTS:
+        if doc['doc_id'] == doc_id:
+            return doc
+    return None
+
+
+def get_all_keywords() -> set:
+    """
+    Extract all unique keywords across all documents.
+    
+    Returns:
+        Set of all keywords
+    """
+    keywords = set()
+    for doc in VECTOR_DB_DOCUMENTS:
+        keywords.update(doc['keywords'])
+    return keywords
+
+
+def search_by_keyword(keyword: str) -> list:
+    """
+    Find all documents containing a specific keyword.
+    
+    Args:
+        keyword: Search term
+    
+    Returns:
+        List of matching documents
+    """
+    keyword_lower = keyword.lower()
+    matching_docs = []
+    
+    for doc in VECTOR_DB_DOCUMENTS:
+        if any(keyword_lower in kw.lower() for kw in doc['keywords']):
+            matching_docs.append(doc)
+    
+    return matching_docs
+
+
+# ========================================================================
+# EXPORT SUMMARY
+# ========================================================================
+
+DOCUMENT_SUMMARY = {
+    "total_documents": len(VECTOR_DB_DOCUMENTS),
+    "categories": {
+        "use_case": len(get_documents_by_category("use_case")),
+        "ensemble_method": len(get_documents_by_category("ensemble_method")),
+        "metric": len(get_documents_by_category("metric")),
+        "business_context": len(get_documents_by_category("business_context")),
+        "features": len(get_documents_by_category("features")),
+        "troubleshooting": len(get_documents_by_category("troubleshooting"))
+    },
+    "total_keywords": len(get_all_keywords()),
+    "coverage": [
+        "5 pharma use cases (NRx, HCP response, feature importance, drift, messaging)",
+        "5 ensemble methods (fundamentals, boosting, bagging, stacking, blending)",
+        "3 metric guides (regression, classification, uplift)",
+        "3 business context docs (lifecycle, terminology, failure modes)",
+        "2 feature guides (HCP features, interactions)",
+        "2 troubleshooting guides (diagnostics, explanations)"
+    ]
+}
