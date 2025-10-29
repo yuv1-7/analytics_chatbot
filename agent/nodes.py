@@ -1,7 +1,8 @@
 import os
 import json
+import re
 from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
+from langchain_core.messages import HumanMessage, SystemMessage, AIMessage, ToolMessage
 from pydantic import BaseModel, Field
 from typing import Optional, List, Dict, Any
 from agent.state import AgentState
@@ -56,6 +57,14 @@ class ParsedIntent(BaseModel):
         default=False,
         description="True if query implies need for charts/graphs"
     )
+    references_previous_context: bool = Field(
+        default=False,
+        description="True if query refers to previous results (e.g., 'these', 'them', 'those models')"
+    )
+    resolved_models: Optional[List[str]] = Field(
+        default=None,
+        description="Model names after resolving references from conversation context"
+    )
 
 
 class SQLQuerySpec(BaseModel):
@@ -76,12 +85,35 @@ class VisualizationSpec(BaseModel):
     )
 
 
+def extract_model_names_from_text(text: str) -> List[str]:
+    model_patterns = [
+        r'model[_\s]id[:\s]+([a-f0-9\-]{36})',
+        r'model[_\s]name[:\s]+([^\n,]+)',
+        r'\b(RF_\w+|XGB_\w+|LGB_\w+|ENS_\w+)\b',
+    ]
+    
+    models = []
+    for pattern in model_patterns:
+        matches = re.findall(pattern, text, re.IGNORECASE)
+        models.extend([m.strip() for m in matches])
+    
+    return list(set(models))
+
+
 def query_understanding_agent(state: AgentState) -> dict:
-    """Parse user query to extract structured intent"""
     query = state['user_query']
     messages = state.get('messages', [])
+    conversation_context = state.get('conversation_context', {})
+    mentioned_models = state.get('mentioned_models', [])
+    current_topic = state.get('current_topic')
     
-    system_msg = """You are a query parser for pharma commercial analytics. Parse user queries to extract:
+    context_summary = ""
+    if mentioned_models:
+        context_summary += f"\nPreviously mentioned models: {', '.join(mentioned_models)}"
+    if current_topic:
+        context_summary += f"\nCurrent topic: {current_topic}"
+    
+    system_msg = f"""You are a query parser for pharma commercial analytics. Parse user queries to extract:
 
 USE CASES:
 - NRx_forecasting: Predicting new prescriptions
@@ -113,13 +145,22 @@ Set requires_visualization=True if query contains:
 - Trends over time
 - Distribution analysis
 
-Extract all relevant information. If query is ambiguous or missing critical info, set needs_clarification=True and provide a clarification_question.
+CONVERSATION CONTEXT:{context_summary}
+
+REFERENCE RESOLUTION:
+If the query contains references like "these", "them", "those models", "it", "they":
+1. Set references_previous_context=True
+2. Look at conversation context to determine what they refer to
+3. Set resolved_models with the actual model names from context
+4. If context is insufficient, set needs_clarification=True
+
+Extract all relevant information. If query is ambiguous or missing critical info, set needs_clarification=True.
 Save info as you go. Don't ask for info already provided by the user.
 
 Examples:
-- "Compare Random Forest vs XGBoost for NRx forecasting last month" → use_case=NRx_forecasting, models_requested=['Random Forest', 'XGBoost'], time_range={'period': 'last_month'}, requires_visualization=True
-- "Why did the ensemble perform worse?" → comparison_type=ensemble_vs_base, needs_clarification=True (which use case? which ensemble?)
-- "Show me drift detection results" → use_case=model_drift_detection, requires_visualization=True"""
+- "Compare Random Forest vs XGBoost for NRx forecasting last month" → use_case=NRx_forecasting, models_requested=['Random Forest', 'XGBoost'], time_range={{'period': 'last_month'}}, requires_visualization=True
+- "Compare performance between these" → references_previous_context=True, resolved_models=[from context], comparison_type=performance
+- "Why did the ensemble perform worse?" → comparison_type=ensemble_vs_base, needs_clarification=True if no models in context"""
     
     structured_llm = llm.with_structured_output(ParsedIntent)
     
@@ -133,11 +174,41 @@ Examples:
     execution_path = state.get('execution_path', [])
     execution_path.append('query_understanding')
     
+    final_models = result.models_requested or []
+    new_mentioned_models = []
+    
+    if result.references_previous_context:
+        if result.resolved_models:
+            final_models = result.resolved_models
+        elif mentioned_models:
+            final_models = mentioned_models
+            result.resolved_models = mentioned_models
+        else:
+            result.needs_clarification = True
+            result.clarification_question = "I don't have context about which models you're referring to. Could you please specify the model names?"
+    
+    if final_models:
+        new_mentioned_models.extend(final_models)
+    
+    last_ai_messages = [msg for msg in messages[-3:] if isinstance(msg, AIMessage)]
+    for msg in last_ai_messages:
+        if hasattr(msg, 'content') and msg.content:
+            extracted = extract_model_names_from_text(msg.content)
+            new_mentioned_models.extend(extracted)
+    
+    summary_parts = []
+    if result.use_case:
+        summary_parts.append(f"use_case: {result.use_case}")
+    if final_models:
+        summary_parts.append(f"models: {', '.join(final_models)}")
+    if result.comparison_type:
+        summary_parts.append(f"comparison: {result.comparison_type}")
+    
     return {
         "messages": [HumanMessage(content=query)],
         "parsed_intent": result.dict(),
         "use_case": result.use_case,
-        "models_requested": result.models_requested,
+        "models_requested": final_models,
         "comparison_type": result.comparison_type,
         "time_range": result.time_range,
         "metrics_requested": result.metrics_requested,
@@ -145,11 +216,13 @@ Examples:
         "needs_clarification": result.needs_clarification,
         "clarification_question": result.clarification_question,
         "requires_visualization": result.requires_visualization,
-        "execution_path": execution_path
+        "execution_path": execution_path,
+        "mentioned_models": new_mentioned_models if new_mentioned_models else None,
+        "current_topic": result.use_case if result.use_case else state.get('current_topic'),
+        "last_query_summary": " | ".join(summary_parts) if summary_parts else None
     }
 
 def context_retrieval_agent(state: AgentState) -> dict:
-    """Retrieve relevant context from vector DB using semantic search"""
     execution_path = state.get('execution_path', [])
     execution_path.append('context_retrieval')
     
@@ -170,7 +243,6 @@ def context_retrieval_agent(state: AgentState) -> dict:
             n_results=5
         )
         
-        # Format documents for downstream agents
         context_docs = []
         for doc in relevant_docs:
             context_docs.append({
@@ -183,7 +255,6 @@ def context_retrieval_agent(state: AgentState) -> dict:
                 'source': 'vector_db'
             })
         
-        # Log retrieved documents for debugging
         print(f"Retrieved {len(context_docs)} relevant documents from vector DB")
         for doc in context_docs[:3]:
             print(f"  - {doc['title']} (relevance: {doc['relevance_score']:.3f})")
@@ -197,7 +268,6 @@ def context_retrieval_agent(state: AgentState) -> dict:
         print(f"Vector DB retrieval failed: {e}")
         print("Falling back to empty context")
         
-        # Fallback: Return empty context with error message
         context_docs = [{
             'type': 'error',
             'content': f'Vector DB retrieval failed: {str(e)}. Please run setup_vector_db.py to initialize the database.',
@@ -211,7 +281,6 @@ def context_retrieval_agent(state: AgentState) -> dict:
 
 
 def sql_generation_agent(state: AgentState) -> dict:
-    """Generate SQL queries based on parsed intent"""
     
     execution_path = state.get('execution_path', [])
     execution_path.append('sql_generation')
@@ -252,11 +321,9 @@ COMMON PATTERNS:
 
 For ENSEMBLE VS BASE COMPARISON:
 ```sql
--- Use the pre-built view
 SELECT * FROM ensemble_vs_base_performance 
 WHERE model_name ILIKE '%ensemble_name%';
 
--- Or build custom comparison
 SELECT 
     m.model_name,
     m.model_type,
@@ -358,7 +425,6 @@ Generate the SQL query now. Make sure it's a valid SELECT statement."""
 
 
 def data_retrieval_agent(state: AgentState) -> dict:
-    """Agent that calls the SQL execution tool with the generated query"""
     
     execution_path = state.get('execution_path', [])
     execution_path.append('data_retrieval')
@@ -385,14 +451,16 @@ Use the execute_sql_query tool to run this query. """
     
     response = llm_with_tools.invoke(messages)
     
+    extracted_models = extract_model_names_from_text(str(response.content))
+    
     return {
         "messages": [response],
-        "execution_path": execution_path
+        "execution_path": execution_path,
+        "mentioned_models": extracted_models if extracted_models else None
     }
 
 
 def analysis_computation_agent(state: AgentState) -> dict:
-    """Perform calculations and analysis on retrieved data"""
     execution_path = state.get('execution_path', [])
     execution_path.append('analysis_computation')
     
@@ -439,7 +507,6 @@ def analysis_computation_agent(state: AgentState) -> dict:
 
 
 def visualization_specification_agent(state: AgentState) -> dict:
-    """Determine which visualizations to generate"""
     execution_path = state.get('execution_path', [])
     execution_path.append('visualization_spec')
     
@@ -485,7 +552,6 @@ Example output:
         viz_specs = result.visualizations
     except Exception as e:
         print(f"Visualization spec generation failed: {e}")
-        # Fallback: Generate default visualization based on comparison type
         viz_specs = _get_default_viz_specs(comparison_type)
     
     return {
@@ -495,7 +561,6 @@ Example output:
 
 
 def _get_default_viz_specs(comparison_type: str) -> List[Dict[str, Any]]:
-    """Fallback visualization specs based on comparison type"""
     defaults = {
         'ensemble_vs_base': [
             {
@@ -530,7 +595,6 @@ def _get_default_viz_specs(comparison_type: str) -> List[Dict[str, Any]]:
 
 
 def visualization_rendering_agent(state: AgentState) -> dict:
-    """Generate actual chart objects from specifications"""
     execution_path = state.get('execution_path', [])
     execution_path.append('visualization_rendering')
     
@@ -562,7 +626,6 @@ def visualization_rendering_agent(state: AgentState) -> dict:
 
 
 def _render_chart(spec: Dict[str, Any], analysis_results: Dict[str, Any]) -> Any:
-    """Helper function to render individual charts"""
     data_key = spec.get('data_key', 'raw_data')
     data = analysis_results.get(data_key)
     
@@ -610,7 +673,6 @@ def _render_chart(spec: Dict[str, Any], analysis_results: Dict[str, Any]) -> Any
 
 
 def insight_generation_agent(state: AgentState) -> dict:
-    """Generate human-readable narrative insights"""
     execution_path = state.get('execution_path', [])
     execution_path.append('insight_generation')
     
@@ -651,7 +713,6 @@ Keep language simple and avoid technical jargon. Focus on actionable insights.""
 
 
 def orchestrator_agent(state: AgentState) -> dict:
-    """Control flow orchestrator"""
     needs_clarification = state.get('needs_clarification', False)
     loop_count = state.get('loop_count', 0)
     

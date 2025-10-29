@@ -9,7 +9,6 @@ load_dotenv()
 
 
 def print_state_info(state):
-    """Print parsed query information and execution path"""
     print("\n" + "="*80)
     print("PARSED QUERY INFORMATION")
     print("="*80)
@@ -43,12 +42,17 @@ def print_state_info(state):
     if state.get('execution_path'):
         print(f"\nExecution Path: {' → '.join(state['execution_path'])}")
     
+    if state.get('mentioned_models'):
+        print(f"\nMentioned Models: {', '.join(state['mentioned_models'])}")
+    
+    if state.get('current_topic'):
+        print(f"Current Topic: {state['current_topic']}")
+    
     print(f"Next Action: {state.get('next_action', 'N/A')}")
     print("="*80 + "\n")
 
 
 def print_tool_results(messages):
-    """Print data retrieved from tools"""
     tool_messages = [msg for msg in messages if isinstance(msg, ToolMessage)]
     
     if not tool_messages:
@@ -84,7 +88,7 @@ def print_tool_results(messages):
                 print(f"\n  Sample Data (first 3 rows):")
                 for idx, row in enumerate(data[:3], 1):
                     print(f"\n  Row {idx}:")
-                    for key, value in list(row.items())[:5]:  # Show first 5 columns
+                    for key, value in list(row.items())[:5]:
                         print(f"    {key}: {value}")
                     if len(row) > 5:
                         print(f"    ... and {len(row) - 5} more columns")
@@ -102,7 +106,6 @@ def print_tool_results(messages):
 
 
 def print_analysis_results(state):
-    """Print analysis and computation results"""
     analysis_results = state.get('analysis_results')
     
     if not analysis_results:
@@ -139,7 +142,6 @@ def print_analysis_results(state):
 
 
 def display_visualizations(state):
-    """Display rendered charts"""
     rendered_charts = state.get('rendered_charts', [])
     
     if not rendered_charts:
@@ -169,7 +171,6 @@ def display_visualizations(state):
 
 
 def print_final_insights(state):
-    """Print the final narrative insights"""
     insights = state.get('final_insights')
     
     if not insights:
@@ -221,7 +222,12 @@ def main():
         "clarification_question": None,
         "loop_count": 0,
         "next_action": None,
-        "execution_path": []
+        "execution_path": [],
+        "conversation_context": {},
+        "mentioned_models": [],
+        "mentioned_model_ids": [],
+        "last_query_summary": None,
+        "current_topic": None
     }
     
     try:
@@ -247,7 +253,6 @@ def main():
                 print("  - Show drift detection for last month\n")
                 continue
             
-            # Reset state for new query
             conversation_state["user_query"] = user_input
             conversation_state["execution_path"] = []
             conversation_state["next_action"] = None
@@ -277,16 +282,13 @@ def main():
                     conversation_state.update(final_state)
                     all_messages = final_state.get('messages', [])
                     
-                    # Print clarification messages if any
                     agent_messages = [msg for msg in all_messages if isinstance(msg, AIMessage)]
                     for msg in agent_messages:
                         if msg.content and not msg.tool_calls:
                             if final_state.get('needs_clarification'):
                                 print("\nAgent: " + msg.content)
                     
-                    # Only print detailed results if not asking for clarification
                     if not final_state.get('needs_clarification'):
-
                         tool_messages = [msg for msg in all_messages if isinstance(msg, ToolMessage)]
                         if tool_messages:
                             print_tool_results(all_messages)
@@ -315,7 +317,6 @@ def main():
             print()
     
     finally:
-        # Close database connections on exit
         close_connection_pool()
         print(" Database connections closed")
 

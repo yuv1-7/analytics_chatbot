@@ -8,10 +8,8 @@ from core.database import initialize_connection_pool, close_connection_pool
 import plotly.graph_objects as go
 from datetime import datetime
 
-# Load environment variables
 load_dotenv()
 
-# Page configuration
 st.set_page_config(
     page_title="Pharma Analytics Assistant",
     page_icon="🏥",
@@ -19,21 +17,17 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# Simple and Clean CSS
 st.markdown("""
 <style>
-    /* Hide sidebar */
     [data-testid="stSidebar"] {
         display: none;
     }
     
-    /* Main container */
     .main {
         background-color: #1a1a1a;
         padding: 2rem 4rem;
     }
     
-    /* Header */
     .app-header {
         background-color: #e8e8e8;
         padding: 2rem;
@@ -55,7 +49,6 @@ st.markdown("""
         margin-top: 0.5rem;
     }
     
-    /* Section headers */
     .section-header {
         font-size: 1.5rem;
         color: #ffffff;
@@ -66,7 +59,6 @@ st.markdown("""
         gap: 0.5rem;
     }
     
-    /* Chat messages */
     .chat-message {
         padding: 1.2rem;
         margin-bottom: 1rem;
@@ -86,7 +78,6 @@ st.markdown("""
         font-size: 0.95rem;
     }
     
-    /* Status indicator */
     .status-badge {
         display: inline-block;
         padding: 0.5rem 1rem;
@@ -97,7 +88,6 @@ st.markdown("""
         margin-bottom: 1rem;
     }
     
-    /* Input section */
     .input-section {
         background-color: #2a2a2a;
         padding: 1.5rem;
@@ -118,7 +108,6 @@ st.markdown("""
         box-shadow: none;
     }
     
-    /* Buttons */
     .stButton>button {
         background-color: #7c7ce8;
         color: white;
@@ -133,7 +122,6 @@ st.markdown("""
         background-color: #6565d8;
     }
     
-    /* Expanders */
     .streamlit-expanderHeader {
         background-color: #2a2a2a;
         color: #ffffff;
@@ -141,7 +129,6 @@ st.markdown("""
         font-weight: 500;
     }
     
-    /* Metrics */
     [data-testid="stMetricValue"] {
         color: #ffffff;
     }
@@ -150,18 +137,15 @@ st.markdown("""
         color: #cccccc;
     }
     
-    /* Code blocks */
     .stCodeBlock {
         background-color: #2a2a2a;
         border-radius: 6px;
     }
     
-    /* Progress bar */
     .stProgress > div > div > div {
         background-color: #7c7ce8;
     }
     
-    /* Remove default padding */
     .block-container {
         padding-top: 2rem;
         padding-bottom: 2rem;
@@ -170,7 +154,6 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# Initialize session state
 def initialize_session_state():
     if 'chat_history' not in st.session_state:
         st.session_state.chat_history = []
@@ -201,7 +184,12 @@ def initialize_session_state():
             "clarification_question": None,
             "loop_count": 0,
             "next_action": None,
-            "execution_path": []
+            "execution_path": [],
+            "conversation_context": {},
+            "mentioned_models": [],
+            "mentioned_model_ids": [],
+            "last_query_summary": None,
+            "current_topic": None
         }
     
     if 'db_initialized' not in st.session_state:
@@ -213,7 +201,6 @@ def initialize_session_state():
             st.session_state.db_error = str(e)
 
 def format_tool_results(messages):
-    """Format tool results for display"""
     tool_messages = [msg for msg in messages if isinstance(msg, ToolMessage)]
     
     if not tool_messages:
@@ -239,7 +226,6 @@ def format_tool_results(messages):
     return results_data if results_data else None
 
 def display_data_table(results_data):
-    """Display retrieved data in tables"""
     if not results_data:
         return
     
@@ -258,7 +244,6 @@ def display_data_table(results_data):
                 st.dataframe(df, use_container_width=True)
 
 def display_analysis_metrics(state):
-    """Display analysis metrics"""
     analysis_results = state.get('analysis_results')
     
     if not analysis_results:
@@ -278,7 +263,6 @@ def display_analysis_metrics(state):
                         cols[idx].metric(key, str(val))
 
 def display_visualizations(state):
-    """Display rendered charts"""
     rendered_charts = state.get('rendered_charts', [])
     
     if not rendered_charts:
@@ -296,10 +280,15 @@ def display_visualizations(state):
             st.warning(f"No figure data available for {title}")
 
 def process_query(user_input):
-    """Process user query through the agent graph"""
     st.session_state.conversation_state["user_query"] = user_input
     st.session_state.conversation_state["execution_path"] = []
     st.session_state.conversation_state["next_action"] = None
+    st.session_state.conversation_state["requires_visualization"] = False
+    st.session_state.conversation_state["analysis_results"] = None
+    st.session_state.conversation_state["rendered_charts"] = None
+    st.session_state.conversation_state["final_insights"] = None
+    st.session_state.conversation_state["generated_sql"] = None
+    st.session_state.conversation_state["sql_purpose"] = None
     
     try:
         final_state = None
@@ -348,7 +337,6 @@ def process_query(user_input):
         }
 
 def display_chat_message(message):
-    """Display a chat message"""
     if message['type'] == 'user':
         st.markdown(f"""
         <div class="chat-message">
@@ -380,7 +368,6 @@ def display_chat_message(message):
 def main():
     initialize_session_state()
     
-    # Header
     st.markdown("""
     <div class="app-header">
         <div class="app-title">🏥 Pharma Analytics Assistant</div>
@@ -388,13 +375,11 @@ def main():
     </div>
     """, unsafe_allow_html=True)
     
-    # Database status
     if st.session_state.db_initialized:
         st.markdown('<div class="status-badge">● Database Connected</div>', unsafe_allow_html=True)
     else:
         st.error(f"❌ Database Error: {st.session_state.get('db_error', 'Unknown error')}")
     
-    # Conversation section
     st.markdown('<div class="section-header">💬 Conversation</div>', unsafe_allow_html=True)
     
     if not st.session_state.chat_history:
@@ -416,7 +401,6 @@ def main():
         for message in st.session_state.chat_history:
             display_chat_message(message)
     
-    # Input section
     st.markdown("---")
     
     col1, col2 = st.columns([5, 1])
@@ -443,13 +427,42 @@ def main():
         
         st.rerun()
     
-    # Clear chat
     if st.session_state.chat_history:
         st.markdown("---")
         if st.button("🗑️ Clear Chat", use_container_width=False):
             st.session_state.chat_history = []
-            st.session_state.conversation_state["messages"] = []
-            st.session_state.conversation_state["loop_count"] = 0
+            st.session_state.conversation_state = {
+                "messages": [],
+                "user_query": None,
+                "parsed_intent": None,
+                "use_case": None,
+                "models_requested": None,
+                "comparison_type": None,
+                "time_range": None,
+                "metrics_requested": None,
+                "entities_requested": None,
+                "requires_visualization": False,
+                "context_documents": None,
+                "generated_sql": None,
+                "sql_purpose": None,
+                "expected_columns": None,
+                "retrieved_data": None,
+                "tool_calls": None,
+                "analysis_results": None,
+                "visualization_specs": None,
+                "rendered_charts": None,
+                "final_insights": None,
+                "needs_clarification": False,
+                "clarification_question": None,
+                "loop_count": 0,
+                "next_action": None,
+                "execution_path": [],
+                "conversation_context": {},
+                "mentioned_models": [],
+                "mentioned_model_ids": [],
+                "last_query_summary": None,
+                "current_topic": None
+            }
             st.rerun()
 
 if __name__ == "__main__":
