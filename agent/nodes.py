@@ -459,8 +459,17 @@ Use the execute_sql_query tool to run this query. """
         "mentioned_models": extracted_models if extracted_models else None
     }
 
+class AnalysisOutput(BaseModel):
+            computed_metrics: Dict[str, Any] = Field(description="Key calculated metrics")
+            patterns: List[str] = Field(description="Identified patterns and trends")
+            anomalies: List[str] = Field(description="Unusual observations or outliers")
+            statistical_summary: Dict[str, Any] = Field(description="Statistical summaries")
 
 def analysis_computation_agent(state: AgentState) -> dict:
+    """
+    Performs intelligent analysis on retrieved data using LLM.
+    Computes metrics, identifies patterns, and detects anomalies.
+    """
     execution_path = state.get('execution_path', [])
     execution_path.append('analysis_computation')
     
@@ -476,35 +485,106 @@ def analysis_computation_agent(state: AgentState) -> dict:
             except:
                 continue
     
-    analysis_results = {
-        'raw_data': tool_results,
-        'computed_metrics': {},
-        'trends': [],
-        'anomalies': []
-    }
+    # If no data retrieved, return empty analysis
+    if not tool_results or not any(r.get('success') for r in tool_results):
+        return {
+            "analysis_results": {
+                'raw_data': tool_results,
+                'summary': 'No data available for analysis',
+                'computed_metrics': {},
+                'insights': []
+            },
+            "execution_path": execution_path
+        }
     
-    comparison_type = state.get('comparison_type')
+    successful_data = []
+    for result in tool_results:
+        if result.get('success') and result.get('data'):
+            successful_data.extend(result['data'])
     
-    if comparison_type == 'ensemble_vs_base' and tool_results:
-        for result in tool_results:
-            if result.get('success') and result.get('data'):
-                data = result['data']
-                for row in data:
-                    if 'ensemble_advantage' in row:
-                        metric_name = row.get('model_name', 'ensemble')
-                        analysis_results['computed_metrics'][metric_name] = {
-                            'ensemble_advantage': row.get('ensemble_advantage'),
-                            'ensemble_rmse': row.get('ensemble_rmse'),
-                            'avg_base_rmse': row.get('avg_base_rmse'),
-                            'ensemble_r2': row.get('ensemble_r2'),
-                            'avg_base_r2': row.get('avg_base_r2')
-                        }
+    # Use LLM to analyze the data
+    analysis_prompt = f"""Analyze the following retrieved data and provide structured insights.
+
+User Query: {state['user_query']}
+Comparison Type: {state.get('comparison_type', 'general')}
+Use Case: {state.get('use_case', 'unknown')}
+
+Retrieved Data:
+{json.dumps(successful_data[:50], indent=2, default=str)}  # Limit to 50 rows to avoid token limits
+
+Provide analysis in the following structure:
+1. **Key Metrics**: Calculate or extract important quantitative metrics
+2. **Patterns**: Identify trends, correlations, or patterns in the data
+3. **Anomalies**: Note any unusual values or outliers
+4. **Statistical Summary**: Basic statistics (mean, min, max, std for numerical columns)
+5. **Comparison Insights**: If comparing models/versions, highlight differences
+
+Output as JSON with keys: computed_metrics (dict), patterns (list), anomalies (list), statistical_summary (dict)
+
+Focus on actionable insights relevant to pharma commercial analytics."""
+
+    try:
+        structured_llm = llm.with_structured_output(AnalysisOutput)
+        analysis = structured_llm.invoke(analysis_prompt)
+        
+        analysis_results = {
+            'raw_data': tool_results,
+            'computed_metrics': analysis.computed_metrics,
+            'patterns': analysis.patterns,
+            'anomalies': analysis.anomalies,
+            'statistical_summary': analysis.statistical_summary,
+            'data_row_count': len(successful_data)
+        }
+        
+    except Exception as e:
+        print(f"LLM analysis failed, falling back to basic analysis: {e}")
+        
+        # Fallback: Basic pandas-style analysis
+        analysis_results = {
+            'raw_data': tool_results,
+            'computed_metrics': _compute_basic_metrics(successful_data),
+            'patterns': [],
+            'anomalies': [],
+            'statistical_summary': {},
+            'data_row_count': len(successful_data),
+            'analysis_error': str(e)
+        }
     
     return {
         "analysis_results": analysis_results,
         "execution_path": execution_path
     }
 
+
+def _compute_basic_metrics(data: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    Fallback basic metric computation when LLM fails.
+    Extracts common pharma metrics from data.
+    """
+    if not data:
+        return {}
+    
+    metrics = {}
+    
+    metric_columns = ['rmse', 'mae', 'r2_score', 'r2', 'auc_roc', 'accuracy', 
+                     'precision', 'recall', 'f1_score', 'drift_score',
+                     'ensemble_advantage', 'metric_value', 'importance_score']
+    
+    for col in metric_columns:
+        values = [row.get(col) for row in data if row.get(col) is not None]
+        if values and all(isinstance(v, (int, float)) for v in values):
+            metrics[col] = {
+                'mean': sum(values) / len(values),
+                'min': min(values),
+                'max': max(values),
+                'count': len(values)
+            }
+    
+    model_names = list(set(row.get('model_name') for row in data if row.get('model_name')))
+    if model_names:
+        metrics['models_analyzed'] = model_names
+    
+    return metrics
 
 def visualization_specification_agent(state: AgentState) -> dict:
     execution_path = state.get('execution_path', [])
