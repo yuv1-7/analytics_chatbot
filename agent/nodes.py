@@ -148,37 +148,66 @@ Examples:
         "execution_path": execution_path
     }
 
-
 def context_retrieval_agent(state: AgentState) -> dict:
-    """Retrieve relevant context from vector DB (COMMENTED OUT - TO BE IMPLEMENTED)"""
+    """Retrieve relevant context from vector DB using semantic search"""
     execution_path = state.get('execution_path', [])
     execution_path.append('context_retrieval')
     
-    # Placeholder: Return empty context for now
-    context_docs = []
+    try:
+        from core.vector_retriever import get_vector_retriever
+        
+        retriever = get_vector_retriever()
+        
+        user_query = state.get('user_query', '')
+        use_case = state.get('use_case')
+        comparison_type = state.get('comparison_type')
+        models_requested = state.get('models_requested', [])
+        
+        relevant_docs = retriever.search_with_context(
+            query=user_query,
+            use_case=use_case,
+            comparison_type=comparison_type,
+            n_results=5
+        )
+        
+        # Format documents for downstream agents
+        context_docs = []
+        for doc in relevant_docs:
+            context_docs.append({
+                'doc_id': doc['doc_id'],
+                'category': doc['metadata'].get('category', 'unknown'),
+                'title': doc['metadata'].get('title', 'Untitled'),
+                'content': doc['content'],
+                'relevance_score': 1.0 - doc['distance'],
+                'keywords': doc['metadata'].get('keywords', []),
+                'source': 'vector_db'
+            })
+        
+        # Log retrieved documents for debugging
+        print(f"Retrieved {len(context_docs)} relevant documents from vector DB")
+        for doc in context_docs[:3]:
+            print(f"  - {doc['title']} (relevance: {doc['relevance_score']:.3f})")
+        
+        return {
+            "context_documents": context_docs,
+            "execution_path": execution_path
+        }
     
-    # Optional: Add basic context based on query parameters (without vector DB)
-    use_case = state.get('use_case')
-    models = state.get('models_requested', [])
-    
-    if use_case:
-        context_docs.append({
-            'type': 'use_case_context',
-            'content': f'Context for {use_case} (Vector DB retrieval disabled)',
-            'source': 'placeholder'
-        })
-    
-    if models:
-        context_docs.append({
-            'type': 'model_context',
-            'content': f'Information about {", ".join(models)} (Vector DB retrieval disabled)',
-            'source': 'placeholder'
-        })
-    
-    return {
-        "context_documents": context_docs,
-        "execution_path": execution_path
-    }
+    except Exception as e:
+        print(f"Vector DB retrieval failed: {e}")
+        print("Falling back to empty context")
+        
+        # Fallback: Return empty context with error message
+        context_docs = [{
+            'type': 'error',
+            'content': f'Vector DB retrieval failed: {str(e)}. Please run setup_vector_db.py to initialize the database.',
+            'source': 'fallback'
+        }]
+        
+        return {
+            "context_documents": context_docs,
+            "execution_path": execution_path
+        }
 
 
 def sql_generation_agent(state: AgentState) -> dict:
