@@ -290,6 +290,7 @@ def sql_generation_agent(state: AgentState) -> dict:
     comparison_type = state.get('comparison_type')
     metrics_requested = state.get('metrics_requested', [])
     time_range = state.get('time_range')
+    context_docs=state.get('context_documents',[])
     
     prompt = f"""
 You are a SQL expert specializing in pharma commercial analytics databases. Your task is to generate a **valid PostgreSQL SELECT query** that accurately answers the user's question.
@@ -306,6 +307,8 @@ PARSED INTENT:
 {SCHEMA_CONTEXT}
 
 {METRIC_GUIDE}
+
+{context_docs}
 
 INSTRUCTIONS:
 1. Generate a **valid PostgreSQL SELECT query** only.
