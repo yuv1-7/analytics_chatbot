@@ -290,6 +290,7 @@ def sql_generation_agent(state: AgentState) -> dict:
     comparison_type = state.get('comparison_type')
     metrics_requested = state.get('metrics_requested', [])
     time_range = state.get('time_range')
+    context_docs=state.get('context_documents',[])
     
     prompt = f"""
 You are a SQL expert specializing in pharma commercial analytics databases. Your task is to generate a **valid PostgreSQL SELECT query** that accurately answers the user's question.
@@ -306,6 +307,8 @@ PARSED INTENT:
 {SCHEMA_CONTEXT}
 
 {METRIC_GUIDE}
+
+{context_docs}
 
 INSTRUCTIONS:
 1. Generate a **valid PostgreSQL SELECT query** only.
@@ -514,7 +517,6 @@ def _compute_basic_metrics(data: List[Dict[str, Any]]) -> Dict[str, Any]:
         metrics['models_analyzed'] = model_names
     
     return metrics
-
 def visualization_specification_agent(state: AgentState) -> dict:
     execution_path = state.get('execution_path', [])
     execution_path.append('visualization_spec')
@@ -558,7 +560,14 @@ Example output:
     
     try:
         result = structured_llm.invoke(prompt)
-        viz_specs = result.visualizations
+        # Convert Pydantic models to dictionaries
+        if hasattr(result, 'visualizations'):
+            viz_specs = [
+                v.dict() if hasattr(v, 'dict') else v.model_dump() if hasattr(v, 'model_dump') else v
+                for v in result.visualizations
+            ]
+        else:
+            viz_specs = _get_default_viz_specs(comparison_type)
     except Exception as e:
         print(f"Visualization spec generation failed: {e}")
         viz_specs = _get_default_viz_specs(comparison_type)
@@ -577,7 +586,8 @@ def _get_default_viz_specs(comparison_type: str) -> List[Dict[str, Any]]:
                 "title": "Model Performance Comparison",
                 "data_key": "computed_metrics",
                 "x": "metric_name",
-                "y": "improvement_percentage"
+                "y": "improvement_percentage",
+                "additional_params": {}
             }
         ],
         'performance': [
@@ -586,7 +596,8 @@ def _get_default_viz_specs(comparison_type: str) -> List[Dict[str, Any]]:
                 "title": "Performance Metrics",
                 "data_key": "raw_data",
                 "x": "model_name",
-                "y": "metric_value"
+                "y": "metric_value",
+                "additional_params": {}
             }
         ],
         'drift': [
@@ -595,7 +606,8 @@ def _get_default_viz_specs(comparison_type: str) -> List[Dict[str, Any]]:
                 "title": "Drift Score Over Time",
                 "data_key": "raw_data",
                 "x": "timestamp",
-                "y": "drift_score"
+                "y": "drift_score",
+                "additional_params": {}
             }
         ]
     }
@@ -611,6 +623,7 @@ def visualization_rendering_agent(state: AgentState) -> dict:
     analysis_results = state.get('analysis_results', {})
     
     if not viz_specs:
+        print("No visualization specs found")
         return {"execution_path": execution_path}
     
     rendered_charts = []
@@ -620,13 +633,20 @@ def visualization_rendering_agent(state: AgentState) -> dict:
             chart = _render_chart(spec, analysis_results)
             if chart:
                 rendered_charts.append({
-                    'title': spec['title'],
+                    'title': spec.get('title', 'Chart'),
                     'figure': chart,
-                    'type': spec['type']
+                    'type': spec.get('type', 'unknown')
                 })
+                print(f"Successfully rendered chart: {spec.get('title')}")
+            else:
+                print(f"Failed to render chart: {spec.get('title')}")
         except Exception as e:
-            print(f"Failed to render chart: {e}")
+            print(f"Failed to render chart '{spec.get('title')}': {e}")
+            import traceback
+            traceback.print_exc()
             continue
+    
+    print(f"Total charts rendered: {len(rendered_charts)}")
     
     return {
         "rendered_charts": rendered_charts,
@@ -635,49 +655,114 @@ def visualization_rendering_agent(state: AgentState) -> dict:
 
 
 def _render_chart(spec: Dict[str, Any], analysis_results: Dict[str, Any]) -> Any:
+    import pandas as pd
+    import plotly.express as px
+    
     data_key = spec.get('data_key', 'raw_data')
     data = analysis_results.get(data_key)
     
+    print(f"Rendering chart: {spec.get('title')}")
+    print(f"Data key: {data_key}")
+    print(f"Data type: {type(data)}")
+    
     if not data:
+        print(f"No data found for key: {data_key}")
         return None
     
-    if isinstance(data, dict):
+    # Convert data to DataFrame
+    df = None
+    
+    if isinstance(data, pd.DataFrame):
+        df = data
+    elif isinstance(data, dict):
         if data_key == 'computed_metrics':
-            df = pd.DataFrame([
-                {'metric': k, **v} for k, v in data.items()
-            ])
+            # Handle computed metrics format
+            rows = []
+            for metric_name, metric_values in data.items():
+                row = {'metric_name': metric_name}
+                row.update(metric_values)
+                rows.append(row)
+            df = pd.DataFrame(rows)
         else:
-            df = pd.DataFrame([data])
+            # Try to convert dict to DataFrame
+            try:
+                df = pd.DataFrame([data])
+            except:
+                df = pd.DataFrame(data)
     elif isinstance(data, list):
-        if data and isinstance(data[0], dict) and 'data' in data[0]:
-            df = pd.DataFrame(data[0]['data'])
+        if data and isinstance(data[0], dict):
+            if 'data' in data[0]:
+                df = pd.DataFrame(data[0]['data'])
+            else:
+                df = pd.DataFrame(data)
         else:
-            df = pd.DataFrame(data)
+            try:
+                df = pd.DataFrame(data)
+            except:
+                print(f"Could not convert list to DataFrame")
+                return None
     else:
+        print(f"Unsupported data type: {type(data)}")
         return None
     
-    if df.empty:
+    if df is None or df.empty:
+        print("DataFrame is empty or None")
         return None
     
-    chart_type = spec['type']
-    title = spec['title']
+    print(f"DataFrame shape: {df.shape}")
+    print(f"DataFrame columns: {df.columns.tolist()}")
+    
+    chart_type = spec.get('type')
+    title = spec.get('title', 'Chart')
+    x_col = spec.get('x')
+    y_col = spec.get('y')
+    
+    # Verify columns exist
+    if x_col and x_col not in df.columns:
+        print(f"Warning: x column '{x_col}' not found in DataFrame. Available: {df.columns.tolist()}")
+        # Try to find a suitable column
+        x_col = df.columns[0] if len(df.columns) > 0 else None
+    
+    if y_col and y_col not in df.columns:
+        print(f"Warning: y column '{y_col}' not found in DataFrame. Available: {df.columns.tolist()}")
+        # Try to find a suitable column
+        y_col = df.columns[1] if len(df.columns) > 1 else df.columns[0]
+    
     try:
+        fig = None
+        
         if chart_type == 'bar_chart':
-            fig = px.bar(df, x=spec.get('x'), y=spec.get('y'), title=title)
+            fig = px.bar(df, x=x_col, y=y_col, title=title)
         elif chart_type == 'line_chart':
-            fig = px.line(df, x=spec.get('x'), y=spec.get('y'), title=title)
+            fig = px.line(df, x=x_col, y=y_col, title=title)
         elif chart_type == 'scatter_plot':
-            fig = px.scatter(df, x=spec.get('x'), y=spec.get('y'), title=title)
+            fig = px.scatter(df, x=x_col, y=y_col, title=title)
         elif chart_type == 'heatmap':
-            fig = px.imshow(df.corr() if df.shape[0] > 1 else df, title=title)
+            if df.shape[0] > 1 and df.select_dtypes(include=[np.number]).shape[1] > 1:
+                fig = px.imshow(df.select_dtypes(include=[np.number]).corr(), title=title)
+            else:
+                print("Not enough numeric data for heatmap")
+                return None
         elif chart_type == 'box_plot':
-            fig = px.box(df, y=spec.get('y'), title=title)
+            fig = px.box(df, y=y_col, title=title)
         else:
+            print(f"Unknown chart type: {chart_type}")
             return None
         
+        if fig:
+            # Update layout for better display
+            fig.update_layout(
+                template="plotly_white",
+                height=400,
+                margin=dict(l=20, r=20, t=40, b=20)
+            )
+        
         return fig
+        
     except Exception as e:
         print(f"Chart rendering error: {e}")
+        import traceback
+        traceback.print_exc()
         return None
 
 
