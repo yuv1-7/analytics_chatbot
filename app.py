@@ -284,6 +284,7 @@ def display_visualizations(state):
 
 def extract_final_insights(final_state, all_messages):
     """
+    Extract final insights from state or messages with better fallback handling
     """
     # Priority 1: Check final_insights in state
     if final_state.get('final_insights'):
