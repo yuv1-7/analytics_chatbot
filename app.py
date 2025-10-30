@@ -393,7 +393,6 @@ def main():
         - 📊 Feature Analysis  
         - 🎯 Drift Detection
         - 📈 Generate Visualizations
-        - 🔍 SQL Generation
         
         Type your question below to get started!
         """)
