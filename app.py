@@ -255,12 +255,15 @@ def display_analysis_metrics(state):
         with st.expander("📈 Computed Metrics", expanded=True):
             for metric_name, values in computed_metrics.items():
                 st.write(f"**{metric_name}**")
-                cols = st.columns(len(values))
-                for idx, (key, val) in enumerate(values.items()):
-                    if isinstance(val, float):
-                        cols[idx].metric(key, f"{val:.4f}")
-                    else:
-                        cols[idx].metric(key, str(val))
+                if isinstance(values, dict):
+                    cols = st.columns(len(values))
+                    for idx, (key, val) in enumerate(values.items()):
+                        if isinstance(val, float):
+                            cols[idx].metric(key, f"{val:.4f}")
+                        else:
+                            cols[idx].metric(key, str(val))
+                else:
+                    st.write(values)
 
 def display_visualizations(state):
     rendered_charts = state.get('rendered_charts', [])
@@ -278,6 +281,61 @@ def display_visualizations(state):
             st.plotly_chart(figure, use_container_width=True, key=f"chart_{i}")
         else:
             st.warning(f"No figure data available for {title}")
+
+def extract_final_insights(final_state, all_messages):
+    """
+    """
+    # Priority 1: Check final_insights in state
+    if final_state.get('final_insights'):
+        return final_state['final_insights']
+    
+    # Priority 2: Check last AI message
+    ai_messages = [msg for msg in all_messages if isinstance(msg, AIMessage)]
+    if ai_messages:
+        last_ai_msg = ai_messages[-1]
+        if hasattr(last_ai_msg, 'content') and last_ai_msg.content:
+            # Don't return tool call descriptions
+            if not ("Generated SQL query" in last_ai_msg.content or 
+                    "execute_sql_query" in str(last_ai_msg.content)):
+                return last_ai_msg.content
+    
+    # Priority 3: Check messages in state
+    state_messages = final_state.get('messages', [])
+    ai_messages_state = [msg for msg in state_messages if isinstance(msg, AIMessage)]
+    if ai_messages_state:
+        last_ai_msg = ai_messages_state[-1]
+        if hasattr(last_ai_msg, 'content') and last_ai_msg.content:
+            if not ("Generated SQL query" in last_ai_msg.content or 
+                    "execute_sql_query" in str(last_ai_msg.content)):
+                return last_ai_msg.content
+    
+    # Priority 4: Generate summary from analysis results
+    analysis_results = final_state.get('analysis_results')
+    if analysis_results:
+        summary_parts = []
+        
+        if analysis_results.get('computed_metrics'):
+            summary_parts.append("**Key Metrics:**")
+            for metric, values in list(analysis_results['computed_metrics'].items())[:3]:
+                if isinstance(values, dict):
+                    summary_parts.append(f"- {metric}: {values}")
+                else:
+                    summary_parts.append(f"- {metric}: {values}")
+        
+        if analysis_results.get('patterns'):
+            summary_parts.append("\n**Patterns Identified:**")
+            for pattern in analysis_results['patterns'][:3]:
+                summary_parts.append(f"- {pattern}")
+        
+        if summary_parts:
+            return "\n".join(summary_parts)
+    
+    # Priority 5: Return execution summary
+    execution_path = final_state.get('execution_path', [])
+    if execution_path:
+        return f"Analysis completed successfully. Execution path: {' → '.join(execution_path)}"
+    
+    return "Analysis completed."
 
 def process_query(user_input):
     st.session_state.conversation_state["user_query"] = user_input
@@ -314,26 +372,29 @@ def process_query(user_input):
         if final_state:
             st.session_state.conversation_state.update(final_state)
             
+            # Extract insights with better fallback
+            final_insights = extract_final_insights(final_state, all_messages)
+            
             assistant_response = {
                 'type': 'assistant',
-                'content': '',
+                'content': final_insights,
                 'state': final_state,
                 'visualizations': final_state.get('rendered_charts', []),
-                'insights': final_state.get('final_insights', ''),
+                'insights': final_insights,
                 'tool_results': format_tool_results(all_messages)
             }
             
             if final_state.get('needs_clarification'):
                 assistant_response['content'] = final_state.get('clarification_question', 'Could you please provide more details?')
-            else:
-                assistant_response['content'] = final_state.get('final_insights', 'Analysis complete.')
             
             return assistant_response
         
     except Exception as e:
+        import traceback
+        error_details = traceback.format_exc()
         return {
             'type': 'error',
-            'content': f"Error processing query: {str(e)}"
+            'content': f"Error processing query: {str(e)}\n\nDetails:\n{error_details}"
         }
 
 def display_chat_message(message):
