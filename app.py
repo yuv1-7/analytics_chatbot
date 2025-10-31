@@ -286,11 +286,9 @@ def extract_final_insights(final_state, all_messages):
     """
     Extract final insights from state or messages with better fallback handling
     """
-    # Priority 1: Check final_insights in state
     if final_state.get('final_insights'):
         return final_state['final_insights']
     
-    # Priority 2: Check last AI message
     ai_messages = [msg for msg in all_messages if isinstance(msg, AIMessage)]
     if ai_messages:
         last_ai_msg = ai_messages[-1]
@@ -300,7 +298,6 @@ def extract_final_insights(final_state, all_messages):
                     "execute_sql_query" in str(last_ai_msg.content)):
                 return last_ai_msg.content
     
-    # Priority 3: Check messages in state
     state_messages = final_state.get('messages', [])
     ai_messages_state = [msg for msg in state_messages if isinstance(msg, AIMessage)]
     if ai_messages_state:
@@ -310,7 +307,6 @@ def extract_final_insights(final_state, all_messages):
                     "execute_sql_query" in str(last_ai_msg.content)):
                 return last_ai_msg.content
     
-    # Priority 4: Generate summary from analysis results
     analysis_results = final_state.get('analysis_results')
     if analysis_results:
         summary_parts = []
@@ -331,7 +327,6 @@ def extract_final_insights(final_state, all_messages):
         if summary_parts:
             return "\n".join(summary_parts)
     
-    # Priority 5: Return execution summary
     execution_path = final_state.get('execution_path', [])
     if execution_path:
         return f"Analysis completed successfully. Execution path: {' → '.join(execution_path)}"
@@ -373,7 +368,6 @@ def process_query(user_input):
         if final_state:
             st.session_state.conversation_state.update(final_state)
             
-            # Extract insights with better fallback
             final_insights = extract_final_insights(final_state, all_messages)
             
             assistant_response = {
