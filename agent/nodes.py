@@ -171,6 +171,15 @@ Examples:
     context_messages.append(HumanMessage(content=query))
     
     result = structured_llm.invoke(context_messages)
+
+    viz_keywords = ['show', 'plot', 'chart', 'graph', 'visualize', 'display', 'compare']
+    query_lower = query.lower()
+    force_viz = any(keyword in query_lower for keyword in viz_keywords)
+    
+    # Override LLM decision if user clearly wants visualization
+    if force_viz and not result.requires_visualization:
+        print(f"DEBUG: Forcing requires_visualization=True based on query keywords")
+        result.requires_visualization = True
     
     execution_path = state.get('execution_path', [])
     execution_path.append('query_understanding')
@@ -216,7 +225,7 @@ Examples:
         "entities_requested": result.entities_requested,
         "needs_clarification": result.needs_clarification,
         "clarification_question": result.clarification_question,
-        "requires_visualization": result.requires_visualization,
+        "requires_visualization": result.requires_visualization or force_viz,  # ENSURE IT'S SET
         "execution_path": execution_path,
         "mentioned_models": new_mentioned_models if new_mentioned_models else None,
         "current_topic": result.use_case if result.use_case else state.get('current_topic'),
@@ -526,51 +535,99 @@ def visualization_specification_agent(state: AgentState) -> dict:
     
     analysis_results = state.get('analysis_results', {})
     comparison_type = state.get('comparison_type')
+    user_query = state.get('user_query', '')
+    
+    # Extract data info for better prompting
+    data_keys = list(analysis_results.keys())
+    sample_data = None
+    if 'raw_data' in analysis_results:
+        raw = analysis_results['raw_data']
+        if raw and len(raw) > 0:
+            if 'data' in raw[0]:
+                sample_data = raw[0]['data'][:2]
+            else:
+                sample_data = raw[:2]
     
     prompt = f"""
-Based on the query and analysis results, generate visualization specifications.
+You are generating visualization specifications for pharma analytics data.
 
-Query: {state['user_query']}
-Comparison Type: {comparison_type}
-Analysis Results Available: {list(analysis_results.keys())}
+USER QUERY: {user_query}
+COMPARISON TYPE: {comparison_type}
+AVAILABLE DATA KEYS: {data_keys}
+SAMPLE DATA: {sample_data}
 
-Output a JSON with visualization specs. Each spec should include:
-- type: bar_chart, line_chart, scatter_plot, heatmap, box_plot
-- title: Descriptive title
-- data_key: Which key from analysis_results to use
-- x, y: Column names for axes
-- additional_params: Any extra configuration
+Generate 2-3 visualization specifications as a JSON array.
 
-Example output:
+CRITICAL: Each visualization MUST have ALL these fields:
+- type: One of ["bar_chart", "line_chart", "scatter_plot", "box_plot"]
+- title: Descriptive title string
+- data_key: Must be "raw_data" (the main data source)
+- x: Column name for x-axis (e.g., "model_name")
+- y: Column name for y-axis (e.g., "metric_value")
+- additional_params: JSON object with optional parameters
+
+EXAMPLE OUTPUT:
 {{
-    "visualizations": [
-        {{
-            "type": "bar_chart",
-            "title": "Ensemble vs Base Model Performance",
-            "data_key": "computed_metrics",
-            "x": "metric_name",
-            "y": "improvement_percentage",
-            "additional_params": {{"color": "metric_name"}}
-        }}
-    ]
+  "visualizations": [
+    {{
+      "type": "bar_chart",
+      "title": "RMSE Comparison Across Models",
+      "data_key": "raw_data",
+      "x": "model_name",
+      "y": "metric_value",
+      "additional_params": {{"color": "model_name", "filter_metric": "rmse"}}
+    }},
+    {{
+      "type": "bar_chart",
+      "title": "R² Score Comparison",
+      "data_key": "raw_data",
+      "x": "model_name",
+      "y": "metric_value",
+      "additional_params": {{"color": "model_name", "filter_metric": "r2_score"}}
+    }}
+  ]
 }}
+
+Generate appropriate visualizations based on the comparison type.
 """
     
-    structured_llm = llm.with_structured_output(VisualizationSpec)
-    
     try:
+        structured_llm = llm.with_structured_output(VisualizationSpec)
         result = structured_llm.invoke(prompt)
-        # Convert Pydantic models to dictionaries
+        
+        # Extract and validate specs
         if hasattr(result, 'visualizations'):
             viz_specs = [
                 v.dict() if hasattr(v, 'dict') else v.model_dump() if hasattr(v, 'model_dump') else v
                 for v in result.visualizations
             ]
         else:
-            viz_specs = _get_default_viz_specs(comparison_type)
+            viz_specs = []
+        
+        # VALIDATION: Check if specs are valid
+        valid_specs = []
+        for spec in viz_specs:
+            if all([
+                spec.get('type'),
+                spec.get('title'),
+                spec.get('data_key'),
+                spec.get('x'),
+                spec.get('y')
+            ]):
+                valid_specs.append(spec)
+            else:
+                print(f"⚠️ Invalid spec detected: {spec}")
+        
+        if not valid_specs:
+            print("⚠️ No valid specs generated by LLM, using defaults")
+            viz_specs = _get_default_viz_specs(comparison_type, analysis_results)
+        else:
+            viz_specs = valid_specs
+            print(f"✅ Generated {len(viz_specs)} valid visualization specs")
+            
     except Exception as e:
-        print(f"Visualization spec generation failed: {e}")
-        viz_specs = _get_default_viz_specs(comparison_type)
+        print(f"❌ Visualization spec generation failed: {e}")
+        viz_specs = _get_default_viz_specs(comparison_type, analysis_results)
     
     return {
         "visualization_specs": viz_specs,
@@ -578,26 +635,52 @@ Example output:
     }
 
 
-def _get_default_viz_specs(comparison_type: str) -> List[Dict[str, Any]]:
+def _get_default_viz_specs(comparison_type: str, analysis_results: Dict = None) -> List[Dict[str, Any]]:
+    """
+    Generate default visualization specs with actual data inspection
+    """
+    # Try to inspect data structure
+    columns = []
+    if analysis_results and 'raw_data' in analysis_results:
+        raw = analysis_results['raw_data']
+        if raw and len(raw) > 0:
+            if 'data' in raw[0]:
+                sample = raw[0]['data'][0] if raw[0]['data'] else {}
+            else:
+                sample = raw[0] if isinstance(raw, list) else {}
+            columns = list(sample.keys())
+    
+    # Determine x and y based on available columns
+    x_col = 'model_name' if 'model_name' in columns else columns[0] if columns else 'x'
+    y_col = 'metric_value' if 'metric_value' in columns else columns[1] if len(columns) > 1 else 'y'
+    
     defaults = {
         'ensemble_vs_base': [
             {
                 "type": "bar_chart",
                 "title": "Model Performance Comparison",
-                "data_key": "computed_metrics",
-                "x": "metric_name",
-                "y": "improvement_percentage",
-                "additional_params": {}
+                "data_key": "raw_data",
+                "x": x_col,
+                "y": y_col,
+                "additional_params": {"color": x_col}
             }
         ],
         'performance': [
             {
                 "type": "bar_chart",
-                "title": "Performance Metrics",
+                "title": "RMSE Comparison",
                 "data_key": "raw_data",
-                "x": "model_name",
-                "y": "metric_value",
-                "additional_params": {}
+                "x": x_col,
+                "y": y_col,
+                "additional_params": {"color": x_col, "filter_metric": "rmse"}
+            },
+            {
+                "type": "bar_chart",
+                "title": "R² Score Comparison",
+                "data_key": "raw_data",
+                "x": x_col,
+                "y": y_col,
+                "additional_params": {"color": x_col, "filter_metric": "r2_score"}
             }
         ],
         'drift': [
@@ -605,14 +688,16 @@ def _get_default_viz_specs(comparison_type: str) -> List[Dict[str, Any]]:
                 "type": "line_chart",
                 "title": "Drift Score Over Time",
                 "data_key": "raw_data",
-                "x": "timestamp",
-                "y": "drift_score",
+                "x": "timestamp" if "timestamp" in columns else x_col,
+                "y": "drift_score" if "drift_score" in columns else y_col,
                 "additional_params": {}
             }
         ]
     }
     
-    return defaults.get(comparison_type, [])
+    result = defaults.get(comparison_type, defaults['performance'])
+    print(f"📊 Using default viz specs for {comparison_type}: {len(result)} charts")
+    return result
 
 
 def visualization_rendering_agent(state: AgentState) -> dict:
@@ -666,7 +751,7 @@ def _render_chart(spec: Dict[str, Any], analysis_results: Dict[str, Any]) -> Any
     print(f"Data type: {type(data)}")
     
     if not data:
-        print(f"No data found for key: {data_key}")
+        print(f"❌ No data found for key: {data_key}")
         return None
     
     # Convert data to DataFrame
@@ -674,93 +759,77 @@ def _render_chart(spec: Dict[str, Any], analysis_results: Dict[str, Any]) -> Any
     
     if isinstance(data, pd.DataFrame):
         df = data
-    elif isinstance(data, dict):
-        if data_key == 'computed_metrics':
-            # Handle computed metrics format
-            rows = []
-            for metric_name, metric_values in data.items():
-                row = {'metric_name': metric_name}
-                row.update(metric_values)
-                rows.append(row)
-            df = pd.DataFrame(rows)
-        else:
-            # Try to convert dict to DataFrame
-            try:
-                df = pd.DataFrame([data])
-            except:
-                df = pd.DataFrame(data)
     elif isinstance(data, list):
-        if data and isinstance(data[0], dict):
-            if 'data' in data[0]:
+        if data and len(data) > 0:
+            if isinstance(data[0], dict) and 'data' in data[0]:
+                # Handle [{success: True, data: [...]}] format
                 df = pd.DataFrame(data[0]['data'])
             else:
+                # Handle direct list of dicts
                 df = pd.DataFrame(data)
-        else:
-            try:
-                df = pd.DataFrame(data)
-            except:
-                print(f"Could not convert list to DataFrame")
-                return None
-    else:
-        print(f"Unsupported data type: {type(data)}")
-        return None
+    elif isinstance(data, dict):
+        # Try to convert dict to DataFrame
+        try:
+            df = pd.DataFrame([data])
+        except:
+            pass
     
     if df is None or df.empty:
-        print("DataFrame is empty or None")
+        print("❌ DataFrame is empty or None")
         return None
     
-    print(f"DataFrame shape: {df.shape}")
-    print(f"DataFrame columns: {df.columns.tolist()}")
+    print(f"✅ DataFrame shape: {df.shape}")
+    print(f"✅ DataFrame columns: {df.columns.tolist()}")
     
     chart_type = spec.get('type')
     title = spec.get('title', 'Chart')
     x_col = spec.get('x')
     y_col = spec.get('y')
+    additional_params = spec.get('additional_params', {})
+    
+    # Handle filtering if specified
+    filter_metric = additional_params.get('filter_metric')
+    if filter_metric and 'metric_name' in df.columns:
+        df = df[df['metric_name'] == filter_metric].copy()
+        print(f"  Filtered to metric: {filter_metric}, rows: {len(df)}")
     
     # Verify columns exist
-    if x_col and x_col not in df.columns:
-        print(f"Warning: x column '{x_col}' not found in DataFrame. Available: {df.columns.tolist()}")
-        # Try to find a suitable column
-        x_col = df.columns[0] if len(df.columns) > 0 else None
+    if x_col not in df.columns:
+        print(f"⚠️ x column '{x_col}' not found. Using first column")
+        x_col = df.columns[0]
     
-    if y_col and y_col not in df.columns:
-        print(f"Warning: y column '{y_col}' not found in DataFrame. Available: {df.columns.tolist()}")
-        # Try to find a suitable column
+    if y_col not in df.columns:
+        print(f"⚠️ y column '{y_col}' not found. Using second column")
         y_col = df.columns[1] if len(df.columns) > 1 else df.columns[0]
     
     try:
         fig = None
+        color = additional_params.get('color')
         
         if chart_type == 'bar_chart':
-            fig = px.bar(df, x=x_col, y=y_col, title=title)
+            fig = px.bar(df, x=x_col, y=y_col, title=title, color=color)
         elif chart_type == 'line_chart':
-            fig = px.line(df, x=x_col, y=y_col, title=title)
+            fig = px.line(df, x=x_col, y=y_col, title=title, color=color)
         elif chart_type == 'scatter_plot':
-            fig = px.scatter(df, x=x_col, y=y_col, title=title)
-        elif chart_type == 'heatmap':
-            if df.shape[0] > 1 and df.select_dtypes(include=[np.number]).shape[1] > 1:
-                fig = px.imshow(df.select_dtypes(include=[np.number]).corr(), title=title)
-            else:
-                print("Not enough numeric data for heatmap")
-                return None
+            fig = px.scatter(df, x=x_col, y=y_col, title=title, color=color)
         elif chart_type == 'box_plot':
-            fig = px.box(df, y=y_col, title=title)
+            fig = px.box(df, y=y_col, title=title, color=color)
         else:
-            print(f"Unknown chart type: {chart_type}")
+            print(f"❌ Unknown chart type: {chart_type}")
             return None
         
         if fig:
-            # Update layout for better display
             fig.update_layout(
                 template="plotly_white",
                 height=400,
                 margin=dict(l=20, r=20, t=40, b=20)
             )
+            print(f"✅ Chart rendered successfully: {title}")
         
         return fig
         
     except Exception as e:
-        print(f"Chart rendering error: {e}")
+        print(f"❌ Chart rendering error: {e}")
         import traceback
         traceback.print_exc()
         return None
