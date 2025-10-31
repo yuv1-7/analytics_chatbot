@@ -813,7 +813,7 @@ def orchestrator_agent(state: AgentState) -> dict:
     execution_path = state.get('execution_path', [])
     execution_path.append('orchestrator')
     
-    if loop_count > 5:
+    if loop_count > 16:
         return {
             "next_action": "end",
             "execution_path": execution_path,
