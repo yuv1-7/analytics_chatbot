@@ -167,7 +167,7 @@ Examples:
     
     context_messages = [SystemMessage(content=system_msg)]
     if messages:
-        context_messages.extend(messages[-5:])
+        context_messages.extend(messages[-10:])
     context_messages.append(HumanMessage(content=query))
     
     result = structured_llm.invoke(context_messages)
@@ -191,7 +191,7 @@ Examples:
     if final_models:
         new_mentioned_models.extend(final_models)
     
-    last_ai_messages = [msg for msg in messages[-3:] if isinstance(msg, AIMessage)]
+    last_ai_messages = [msg for msg in messages[-6:] if isinstance(msg, AIMessage)]
     for msg in last_ai_messages:
         if hasattr(msg, 'content') and msg.content:
             extracted = extract_model_names_from_text(msg.content)
@@ -435,7 +435,6 @@ def analysis_computation_agent(state: AgentState) -> dict:
         if result.get('success') and result.get('data'):
             successful_data.extend(result['data'])
     
-    # Use LLM to analyze the data
     analysis_prompt = f"""Analyze the following retrieved data and provide structured insights.
 
 User Query: {state['user_query']}
