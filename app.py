@@ -7,6 +7,8 @@ from langchain_core.messages import AIMessage, ToolMessage, HumanMessage
 from core.database import initialize_connection_pool, close_connection_pool
 import plotly.graph_objects as go
 from datetime import datetime
+import pandas as pd
+import time
 
 load_dotenv()
 
@@ -200,6 +202,23 @@ def initialize_session_state():
             st.session_state.db_initialized = False
             st.session_state.db_error = str(e)
 
+def initialize_log_dataframe():
+    """Initialize an empty DataFrame for logging queries, responses, and errors."""
+    if 'query_log' not in st.session_state:
+        st.session_state.query_log = pd.DataFrame(columns=[
+            'timestamp',
+            'query',
+            'response',
+            'status',
+            'error_type',
+            'execution_path',
+            'processing_time',
+            'num_visualizations',
+            'num_tool_results',
+            'needs_clarification'
+        ])
+
+
 def format_tool_results(messages):
     tool_messages = [msg for msg in messages if isinstance(msg, ToolMessage)]
     
@@ -334,6 +353,9 @@ def extract_final_insights(final_state, all_messages):
     return "Analysis completed."
 
 def process_query(user_input):
+    start_time = time.time()
+    
+    # Reset conversation state
     st.session_state.conversation_state["user_query"] = user_input
     st.session_state.conversation_state["execution_path"] = []
     st.session_state.conversation_state["next_action"] = None
@@ -343,15 +365,15 @@ def process_query(user_input):
     st.session_state.conversation_state["final_insights"] = None
     st.session_state.conversation_state["generated_sql"] = None
     st.session_state.conversation_state["sql_purpose"] = None
-    
+
     try:
         final_state = None
         all_messages = []
-        
         progress_bar = st.progress(0)
         status_text = st.empty()
-        
         steps = []
+
+        # Stream through the graph
         for event in graph.stream(st.session_state.conversation_state):
             for node_name, value in event.items():
                 steps.append(node_name)
@@ -361,15 +383,14 @@ def process_query(user_input):
                 if 'messages' in value:
                     all_messages.extend(value['messages'])
                 final_state = value
-        
+
         progress_bar.empty()
         status_text.empty()
-        
+
         if final_state:
             st.session_state.conversation_state.update(final_state)
-            
             final_insights = extract_final_insights(final_state, all_messages)
-            
+
             assistant_response = {
                 'type': 'assistant',
                 'content': final_insights,
@@ -378,15 +399,48 @@ def process_query(user_input):
                 'insights': final_insights,
                 'tool_results': format_tool_results(all_messages)
             }
-            
+
             if final_state.get('needs_clarification'):
                 assistant_response['content'] = final_state.get('clarification_question', 'Could you please provide more details?')
-            
+
+            # ✅ Log successful query
+            log_entry = {
+                'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                'query': user_input,
+                'response': assistant_response['content'],
+                'status': 'success',
+                'error_type': None,
+                'execution_path': " → ".join(final_state.get('execution_path', [])),
+                'processing_time': round(time.time() - start_time, 2),
+                'num_visualizations': len(final_state.get('rendered_charts', [])) if final_state.get('rendered_charts') else 0,
+                'num_tool_results': len(format_tool_results(all_messages) or []),
+                'needs_clarification': final_state.get('needs_clarification', False)
+            }
+
+            st.session_state.query_log.loc[len(st.session_state.query_log)] = log_entry
+
             return assistant_response
-        
+
     except Exception as e:
         import traceback
         error_details = traceback.format_exc()
+
+        # ❌ Log error
+        log_entry = {
+            'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            'query': user_input,
+            'response': None,
+            'status': 'error',
+            'error_type': str(type(e).__name__),
+            'execution_path': None,
+            'processing_time': round(time.time() - start_time, 2),
+            'num_visualizations': 0,
+            'num_tool_results': 0,
+            'needs_clarification': False
+        }
+
+        st.session_state.query_log.loc[len(st.session_state.query_log)] = log_entry
+
         return {
             'type': 'error',
             'content': f"Error processing query: {str(e)}\n\nDetails:\n{error_details}"
@@ -423,6 +477,8 @@ def display_chat_message(message):
 
 def main():
     initialize_session_state()
+    initialize_log_dataframe()
+
     
     st.markdown("""
     <div class="app-header">
@@ -484,41 +540,36 @@ def main():
     
     if st.session_state.chat_history:
         st.markdown("---")
-        if st.button("🗑️ Clear Chat", use_container_width=False):
-            st.session_state.chat_history = []
-            st.session_state.conversation_state = {
-                "messages": [],
-                "user_query": None,
-                "parsed_intent": None,
-                "use_case": None,
-                "models_requested": None,
-                "comparison_type": None,
-                "time_range": None,
-                "metrics_requested": None,
-                "entities_requested": None,
-                "requires_visualization": False,
-                "context_documents": None,
-                "generated_sql": None,
-                "sql_purpose": None,
-                "expected_columns": None,
-                "retrieved_data": None,
-                "tool_calls": None,
-                "analysis_results": None,
-                "visualization_specs": None,
-                "rendered_charts": None,
-                "final_insights": None,
-                "needs_clarification": False,
-                "clarification_question": None,
-                "loop_count": 0,
-                "next_action": None,
-                "execution_path": [],
-                "conversation_context": {},
-                "mentioned_models": [],
-                "mentioned_model_ids": [],
-                "last_query_summary": None,
-                "current_topic": None
-            }
-            st.rerun()
+        col_clear, col_log = st.columns([1, 3])
+
+        with col_clear:
+            if st.button("🗑️ Clear Chat", use_container_width=True):
+                st.session_state.chat_history = []
+                st.session_state.conversation_state = {
+                    "messages": [], "user_query": None, "parsed_intent": None, "use_case": None,
+                    "models_requested": None, "comparison_type": None, "time_range": None,
+                    "metrics_requested": None, "entities_requested": None, "requires_visualization": False,
+                    "context_documents": None, "generated_sql": None, "sql_purpose": None,
+                    "expected_columns": None, "retrieved_data": None, "tool_calls": None,
+                    "analysis_results": None, "visualization_specs": None, "rendered_charts": None,
+                    "final_insights": None, "needs_clarification": False, "clarification_question": None,
+                    "loop_count": 0, "next_action": None, "execution_path": [],
+                    "conversation_context": {}, "mentioned_models": [], "mentioned_model_ids": [],
+                    "last_query_summary": None, "current_topic": None
+                }
+                st.rerun()
+
+        with col_log:
+            if 'query_log' in st.session_state and not st.session_state.query_log.empty:
+                with st.expander("📜 Query Log History", expanded=False):
+                    st.dataframe(st.session_state.query_log, use_container_width=True)
+                    st.download_button(
+                        label="⬇️ Download Log as CSV",
+                        data=st.session_state.query_log.to_csv(index=False).encode('utf-8'),
+                        file_name=f"pharma_query_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                        mime='text/csv'
+                    )
+
 
 if __name__ == "__main__":
     try:
