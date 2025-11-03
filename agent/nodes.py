@@ -107,12 +107,30 @@ def query_understanding_agent(state: AgentState) -> dict:
     conversation_context = state.get('conversation_context', {})
     mentioned_models = state.get('mentioned_models', [])
     current_topic = state.get('current_topic')
+    clarification_attempts = state.get('clarification_attempts', 0)
+    last_query_summary = state.get('last_query_summary')
     
-    context_summary = ""
+    context_parts = []
+    
     if mentioned_models:
-        context_summary += f"\nPreviously mentioned models: {', '.join(mentioned_models)}"
+        context_parts.append(f"Previously mentioned models: {', '.join(mentioned_models[:5])}")
+    
     if current_topic:
-        context_summary += f"\nCurrent topic: {current_topic}"
+        context_parts.append(f"Current topic: {current_topic}")
+    
+    if last_query_summary:
+        context_parts.append(f"Previous query: {last_query_summary}")
+    
+    recent_content = []
+    for msg in messages[-3:]:
+        if isinstance(msg, AIMessage) and hasattr(msg, 'content') and msg.content:
+            if any(keyword in msg.content.lower() for keyword in ['model', 'rmse', 'auc', 'ensemble', 'nrx', 'hcp']):
+                recent_content.append(msg.content[:200])
+    
+    if recent_content:
+        context_parts.append(f"Recent discussion: {' | '.join(recent_content)}")
+    
+    context_summary = "\n".join(context_parts) if context_parts else "No prior context"
     
     system_msg = f"""You are a query parser for pharma commercial analytics. Parse user queries to extract:
 
@@ -123,51 +141,57 @@ USE CASES:
 - model_drift_detection: Detecting model performance changes over time
 - messaging_optimization: Next-best-action for HCP targeting
 
-MODELS:
-- Base models: Random Forest, XGBoost, LightGBM, Logistic Regression, SVM, Neural Network, Decision Tree
+MODELS (fuzzy matching - user may say "random forest", "RF", "forest", etc.):
+- Base: Random Forest, XGBoost, LightGBM, Logistic Regression, SVM, Neural Network, Decision Tree
 - Ensembles: stacking, boosting, bagging, meta-learner
 
 COMPARISON TYPES:
-- performance: Compare model metrics (RMSE, AUC, accuracy, etc.)
+- performance: Compare model metrics
 - predictions: Compare actual predictions
 - feature_importance: Compare which features matter most
 - drift: Detect changes over time
-- ensemble_vs_base: Why ensemble performs better/worse than base models
+- ensemble_vs_base: Why ensemble performs better/worse
 
-METRICS:
-- Regression: RMSE, MAE, R2, MAPE
-- Classification: Accuracy, Precision, Recall, F1, AUC-ROC
-- Pharma-specific: TRx (total prescriptions), NRx (new prescriptions)
+METRICS: RMSE, MAE, R2, AUC-ROC, Accuracy, Precision, Recall, F1, TRx, NRx
 
-VISUALIZATION TRIGGERS:
-Set requires_visualization=True if query contains:
-- "show", "plot", "chart", "graph", "visualize", "display"
-- Comparison of metrics/models
-- Trends over time
-- Distribution analysis
+CONVERSATION CONTEXT (USE THIS TO AVOID ASKING FOR INFO ALREADY GIVEN):
+{context_summary}
 
-CONVERSATION CONTEXT:{context_summary}
+CRITICAL CLARIFICATION RULES:
+1. Check conversation context FIRST before asking for clarification
+2. Current clarification attempts: {clarification_attempts}
+3. If attempts >= 1, DO NOT ask for clarification. Make reasonable assumptions.
+4. If user mentions "these models", "them", "those" - resolve from mentioned_models list
+5. If user asks "compare performance" without specifying models:
+   - If mentioned_models exists: Use those models
+   - If use_case exists: Assume comparison across all models for that use case
+   - Otherwise: Ask for clarification (only if attempts == 0)
+6. If only vague query like "show me models" - assume they want to see all active models
+7. For follow-up queries (when context exists), be MORE lenient - assume continuation of topic
 
-REFERENCE RESOLUTION:
-If the query contains references like "these", "them", "those models", "it", "they":
-1. Set references_previous_context=True
-2. Look at conversation context to determine what they refer to
-3. Set resolved_models with the actual model names from context
-4. If context is insufficient, set needs_clarification=True
+REFERENCE RESOLUTION PRIORITY:
+1. If "these/those/them/they" mentioned → Use mentioned_models from context
+2. If "the ensemble" mentioned → Look for ensemble in context, or assume ensemble_vs_base comparison
+3. If "that model" mentioned → Use last mentioned model
+4. Only set needs_clarification=True if attempts==0 AND no context available AND query is truly ambiguous
 
-Extract all relevant information. If query is ambiguous or missing critical info, set needs_clarification=True.
-Save info as you go. Don't ask for info already provided by the user.
+Extract all relevant information. BE GENEROUS with assumptions when context exists.
 
 Examples:
-- "Compare Random Forest vs XGBoost for NRx forecasting last month" → use_case=NRx_forecasting, models_requested=['Random Forest', 'XGBoost'], time_range={{'period': 'last_month'}}, requires_visualization=True
-- "Compare performance between these" → references_previous_context=True, resolved_models=[from context], comparison_type=performance
-- "Why did the ensemble perform worse?" → comparison_type=ensemble_vs_base, needs_clarification=True if no models in context"""
+- "Compare Random Forest vs XGBoost for NRx forecasting" → use_case=NRx_forecasting, models=['Random Forest', 'XGBoost']
+- "Compare these" (with context models=['RF', 'XGB']) → resolved_models=['RF', 'XGB'], comparison_type=performance
+- "show performance" (with context use_case=NRx_forecasting) → use_case=NRx_forecasting, comparison_type=performance
+- "why is ensemble worse" (no context, attempts=0) → needs_clarification=True
+- "why is ensemble worse" (no context, attempts=1) → comparison_type=ensemble_vs_base, make assumptions"""
     
     structured_llm = llm.with_structured_output(ParsedIntent)
     
     context_messages = [SystemMessage(content=system_msg)]
+    
+    # Include recent conversation for better context
     if messages:
-        context_messages.extend(messages[-10:])
+        context_messages.extend(messages[-6:])
+    
     context_messages.append(HumanMessage(content=query))
     
     result = structured_llm.invoke(context_messages)
@@ -184,9 +208,23 @@ Examples:
         elif mentioned_models:
             final_models = mentioned_models
             result.resolved_models = mentioned_models
+            result.needs_clarification = False
+        elif clarification_attempts >= 3:
+            final_models = []
+            result.needs_clarification = False
+            result.comparison_type = result.comparison_type or 'performance'
         else:
             result.needs_clarification = True
-            result.clarification_question = "I don't have context about which models you're referring to. Could you please specify the model names?"
+            result.clarification_question = "Which models would you like to compare? Please specify model names (e.g., Random Forest, XGBoost)."
+    
+    if clarification_attempts >= 3:
+        result.needs_clarification = False
+        
+        if not result.use_case and current_topic:
+            result.use_case = current_topic
+        
+        if not final_models and mentioned_models:
+            final_models = mentioned_models
     
     if final_models:
         new_mentioned_models.extend(final_models)
@@ -201,7 +239,7 @@ Examples:
     if result.use_case:
         summary_parts.append(f"use_case: {result.use_case}")
     if final_models:
-        summary_parts.append(f"models: {', '.join(final_models)}")
+        summary_parts.append(f"models: {', '.join(final_models[:3])}")
     if result.comparison_type:
         summary_parts.append(f"comparison: {result.comparison_type}")
     
@@ -220,7 +258,8 @@ Examples:
         "execution_path": execution_path,
         "mentioned_models": new_mentioned_models if new_mentioned_models else None,
         "current_topic": result.use_case if result.use_case else state.get('current_topic'),
-        "last_query_summary": " | ".join(summary_parts) if summary_parts else None
+        "last_query_summary": " | ".join(summary_parts) if summary_parts else None,
+        "clarification_attempts": clarification_attempts
     }
 
 def context_retrieval_agent(state: AgentState) -> dict:

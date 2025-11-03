@@ -1,42 +1,47 @@
 """
-Vector database retrieval interface for semantic search.
+Pinecone vector database retrieval interface for semantic search.
 Used by context_retrieval_agent to fetch relevant documents.
 """
 
-import chromadb
-from chromadb.config import Settings
+import os
+from pinecone import Pinecone
 from sentence_transformers import SentenceTransformer
 from typing import List, Dict, Any, Optional
-import json
+from dotenv import load_dotenv
+
+load_dotenv()
 
 
-class VectorRetriever:
-    """Interface for retrieving documents from ChromaDB"""
+class PineconeRetriever:
+    """Interface for retrieving documents from Pinecone"""
     
-    def __init__(self, persist_directory="./chroma_db", collection_name="pharma_analytics_docs"):
+    def __init__(self, index_name="pharma-analytics"):
         """
-        Initialize vector retriever
+        Initialize Pinecone retriever
         
         Args:
-            persist_directory: Path to ChromaDB storage
-            collection_name: Name of the collection to use
+            index_name: Name of the Pinecone index
         """
-        self.persist_directory = persist_directory
-        self.collection_name = collection_name
+        self.index_name = index_name
         
-        # Initialize ChromaDB client
-        self.client = chromadb.PersistentClient(
-            path=persist_directory,
-            settings=Settings(anonymized_telemetry=False)
-        )
+        # Get API key
+        api_key = os.getenv("PINECONE_API_KEY")
+        if not api_key:
+            raise ValueError(
+                "PINECONE_API_KEY not found in environment. "
+                "Please add it to your .env file"
+            )
         
-        # Load the collection
+        # Initialize Pinecone client
+        self.pc = Pinecone(api_key=api_key)
+        
+        # Connect to index
         try:
-            self.collection = self.client.get_collection(name=collection_name)
+            self.index = self.pc.Index(index_name)
         except Exception as e:
             raise RuntimeError(
-                f"Failed to load collection '{collection_name}'. "
-                f"Did you run setup_vector_db.py first? Error: {e}"
+                f"Failed to connect to Pinecone index '{index_name}'. "
+                f"Did you run setup_pinecone.py first? Error: {e}"
             )
         
         # Load the same encoder used during setup
@@ -47,7 +52,7 @@ class VectorRetriever:
         query: str,
         n_results: int = 5,
         category_filter: Optional[str] = None,
-        where: Optional[Dict[str, Any]] = None
+        filter_dict: Optional[Dict[str, Any]] = None
     ) -> List[Dict[str, Any]]:
         """
         Semantic search for relevant documents
@@ -56,56 +61,37 @@ class VectorRetriever:
             query: Search query text
             n_results: Number of results to return
             category_filter: Optional category to filter by
-            where: Optional ChromaDB where clause for filtering
+            filter_dict: Optional Pinecone filter dictionary
         
         Returns:
             List of document dictionaries with content and metadata
         """
         # Generate query embedding
-        query_embedding = self.encoder.encode([query], convert_to_numpy=True).tolist()
+        query_embedding = self.encoder.encode([query], convert_to_numpy=True).tolist()[0]
         
-        # Build where clause
-        where_clause = where or {}
+        # Build filter
+        filter_clause = filter_dict or {}
         if category_filter:
-            where_clause["category"] = category_filter
+            filter_clause["category"] = {"$eq": category_filter}
         
-        # Query the collection
-        results = self.collection.query(
-            query_embeddings=query_embedding,
-            n_results=n_results,
-            where=where_clause if where_clause else None
+        # Query Pinecone
+        results = self.index.query(
+            vector=query_embedding,
+            top_k=n_results,
+            include_metadata=True,
+            filter=filter_clause if filter_clause else None
         )
         
         # Format results
         documents = []
-        for i in range(len(results['ids'][0])):
+        for match in results['matches']:
             doc = {
-                'doc_id': results['ids'][0][i],
-                'content': results['documents'][0][i],
-                'distance': results['distances'][0][i],
-                'metadata': results['metadatas'][0][i]
+                'doc_id': match['id'],
+                'content': match['metadata'].get('content', ''),
+                'score': match['score'],  # Pinecone returns similarity score (0-1)
+                'distance': 1 - match['score'],  # Convert to distance for consistency
+                'metadata': match['metadata']
             }
-            
-            # Parse JSON fields back to objects
-            if 'keywords' in doc['metadata']:
-                try:
-                    doc['metadata']['keywords'] = json.loads(doc['metadata']['keywords'])
-                except:
-                    pass
-            
-            # Parse metadata fields
-            parsed_metadata = {}
-            for key, value in doc['metadata'].items():
-                if key.startswith('meta_'):
-                    original_key = key[5:]  # Remove 'meta_' prefix
-                    try:
-                        parsed_metadata[original_key] = json.loads(value)
-                    except:
-                        parsed_metadata[original_key] = value
-                else:
-                    parsed_metadata[key] = value
-            
-            doc['metadata'] = parsed_metadata
             documents.append(doc)
         
         return documents
@@ -164,23 +150,18 @@ class VectorRetriever:
             Document dict or None
         """
         try:
-            result = self.collection.get(ids=[doc_id])
+            result = self.index.fetch(ids=[doc_id])
             
-            if not result['ids']:
+            if not result['vectors'] or doc_id not in result['vectors']:
                 return None
             
-            doc = {
-                'doc_id': result['ids'][0],
-                'content': result['documents'][0],
-                'metadata': result['metadatas'][0]
-            }
+            vector_data = result['vectors'][doc_id]
             
-            # Parse JSON fields
-            if 'keywords' in doc['metadata']:
-                try:
-                    doc['metadata']['keywords'] = json.loads(doc['metadata']['keywords'])
-                except:
-                    pass
+            doc = {
+                'doc_id': doc_id,
+                'content': vector_data['metadata'].get('content', ''),
+                'metadata': vector_data['metadata']
+            }
             
             return doc
         except Exception as e:
@@ -188,12 +169,20 @@ class VectorRetriever:
             return None
     
     def get_all_categories(self) -> List[str]:
-        """Get list of all available categories"""
-        all_docs = self.collection.get()
-        categories = set()
-        for metadata in all_docs['metadatas']:
-            categories.add(metadata.get('category', 'unknown'))
-        return sorted(list(categories))
+        """
+        Get list of all available categories
+        Note: This requires querying the index with metadata
+        """
+        # Pinecone doesn't have a built-in way to get all unique metadata values
+        # We'll return the known categories from our setup
+        return [
+            "use_case",
+            "ensemble_method",
+            "metric",
+            "business_context",
+            "features",
+            "troubleshooting"
+        ]
     
     def search_with_context(
         self,
@@ -248,41 +237,48 @@ class VectorRetriever:
             )
             all_results.extend(category_results)
         
-        # Sort by distance (lower is better) and take top n_results
-        all_results.sort(key=lambda x: x['distance'])
+        # Sort by score (higher is better in Pinecone) and take top n_results
+        all_results.sort(key=lambda x: x['score'], reverse=True)
         return all_results[:n_results]
     
     def get_statistics(self) -> Dict[str, Any]:
-        """Get collection statistics"""
-        all_docs = self.collection.get()
-        
-        categories = {}
-        for metadata in all_docs['metadatas']:
-            cat = metadata.get('category', 'unknown')
-            categories[cat] = categories.get(cat, 0) + 1
+        """Get index statistics"""
+        stats = self.index.describe_index_stats()
         
         return {
-            'total_documents': len(all_docs['ids']),
-            'categories': categories,
-            'collection_name': self.collection_name,
-            'persist_directory': self.persist_directory
+            'total_documents': stats['total_vector_count'],
+            'dimension': stats['dimension'],
+            'index_name': self.index_name,
+            'index_fullness': stats.get('index_fullness', 0),
+            'namespaces': stats.get('namespaces', {})
         }
+    
+    def delete_all(self):
+        """Delete all vectors from the index (use with caution!)"""
+        print("WARNING: This will delete all vectors from the index!")
+        response = input("Are you sure? Type 'DELETE' to confirm: ")
+        
+        if response == 'DELETE':
+            self.index.delete(delete_all=True)
+            print("All vectors deleted from index")
+        else:
+            print("Deletion cancelled")
 
 
 # Singleton instance for reuse
 _retriever_instance = None
 
 
-def get_vector_retriever() -> VectorRetriever:
+def get_vector_retriever() -> PineconeRetriever:
     """
-    Get or create singleton VectorRetriever instance
+    Get or create singleton PineconeRetriever instance
     
     Returns:
-        VectorRetriever instance
+        PineconeRetriever instance
     """
     global _retriever_instance
     
     if _retriever_instance is None:
-        _retriever_instance = VectorRetriever()
+        _retriever_instance = PineconeRetriever()
     
     return _retriever_instance
