@@ -848,6 +848,7 @@ Keep language simple and avoid technical jargon. Focus on actionable insights.""
 def orchestrator_agent(state: AgentState) -> dict:
     needs_clarification = state.get('needs_clarification', False)
     loop_count = state.get('loop_count', 0)
+    clarification_attempts = state.get('clarification_attempts', 0)  # Add this
     
     execution_path = state.get('execution_path', [])
     execution_path.append('orchestrator')
@@ -856,14 +857,15 @@ def orchestrator_agent(state: AgentState) -> dict:
         return {
             "next_action": "end",
             "execution_path": execution_path,
-            "messages": [AIMessage(content="Maximum conversation depth reached. Please start a new query.")]
+            "messages": [AIMessage(content="Maximum conversation depth reached.")]
         }
     
     if needs_clarification:
-        clarification = state.get('clarification_question', "Could you please provide more details about your query?")
+        clarification = state.get('clarification_question', "Could you please provide more details?")
         return {
             "next_action": "ask_clarification",
             "execution_path": execution_path,
+            "clarification_attempts": clarification_attempts + 1,  # Add this
             "messages": [AIMessage(content=clarification)]
         }
     
