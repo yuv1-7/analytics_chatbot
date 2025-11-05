@@ -81,11 +81,20 @@ def route_after_tools(state: AgentState) -> str:
     """Route after tools execute to analysis"""
     return RouteDecision.ANALYSIS.value
 
-
 def route_after_analysis(state: AgentState) -> str:
-    """Route after analysis based on visualization requirement"""
-    if state.get('requires_visualization', False):
+    analysis_results = state.get('analysis_results', {})
+    raw_data = analysis_results.get('raw_data', [])
+    
+    has_visualizable_data = False
+    for result in raw_data:
+        if result.get('success') and result.get('data'):
+            if len(result['data']) > 1:
+                has_visualizable_data = True
+                break
+    
+    if has_visualizable_data:
         return RouteDecision.VIZ_SPEC.value
+    
     return RouteDecision.INSIGHTS.value
 
 
