@@ -558,6 +558,7 @@ def _compute_basic_metrics(data: List[Dict[str, Any]]) -> Dict[str, Any]:
     return metrics
 
 def analyze_data_structure(df: pd.DataFrame) -> Dict[str, Any]:
+    """Analyze DataFrame structure for visualization decisions"""
     structure = {
         'row_count': len(df),
         'columns': list(df.columns),
@@ -578,9 +579,11 @@ def analyze_data_structure(df: pd.DataFrame) -> Dict[str, Any]:
             structure['temporal_columns'].append(col)
             structure['has_temporal'] = True
         else:
+            # Try to parse as datetime
             try:
                 parsed = pd.to_datetime(df[col], errors='coerce')
                 if parsed.notna().sum() > 0.8 * len(df):
+                    df[col] = parsed  # Convert in place
                     structure['column_types'][col] = 'temporal'
                     structure['temporal_columns'].append(col)
                     structure['has_temporal'] = True
@@ -596,34 +599,15 @@ def analyze_data_structure(df: pd.DataFrame) -> Dict[str, Any]:
     return structure
 
 
-def should_visualize(analysis_results: Dict[str, Any], query_context: str) -> bool:
-    raw_data = analysis_results.get('raw_data', [])
-    
-    if not raw_data:
-        return False
-    
-    for result in raw_data:
-        if result.get('success') and result.get('data'):
-            data = result['data']
-            if len(data) > 1:
-                return True
-    
-    computed_metrics = analysis_results.get('computed_metrics', {})
-    if computed_metrics and len(computed_metrics) > 1:
-        return True
-    
-    viz_keywords = ['compare', 'trend', 'performance', 'over time', 'distribution', 'ranking', 'top', 'vs']
-    query_lower = query_context.lower()
-    return any(keyword in query_lower for keyword in viz_keywords)
-
-
 def select_chart_type(structure: Dict[str, Any], query_context: str) -> Dict[str, Any]:
+    """Rule-based chart type selection"""
     row_count = structure['row_count']
     temporal_cols = structure['temporal_columns']
     numeric_cols = structure['numeric_columns']
     categorical_cols = structure['categorical_columns']
     cardinality = structure['cardinality']
     
+    # Too many rows
     if row_count > 100:
         high_card_cats = [col for col in categorical_cols if cardinality.get(col, 0) > 50]
         if high_card_cats:
@@ -633,6 +617,7 @@ def select_chart_type(structure: Dict[str, Any], query_context: str) -> Dict[str
                 'suggestion': 'Consider filtering or aggregating data'
             }
     
+    # Time series
     if temporal_cols and numeric_cols:
         return {
             'chart_type': 'line_chart',
@@ -640,6 +625,7 @@ def select_chart_type(structure: Dict[str, Any], query_context: str) -> Dict[str
             'suitable_for': 'trends over time'
         }
     
+    # Categorical comparison
     low_card_cats = [col for col in categorical_cols if cardinality.get(col, 0) <= 20]
     if low_card_cats and numeric_cols:
         return {
@@ -648,6 +634,7 @@ def select_chart_type(structure: Dict[str, Any], query_context: str) -> Dict[str
             'suitable_for': 'comparing categories'
         }
     
+    # Ranking/importance
     if 'rank' in [c.lower() for c in structure['columns']] or \
        any('importance' in c.lower() for c in structure['columns']):
         return {
@@ -656,6 +643,7 @@ def select_chart_type(structure: Dict[str, Any], query_context: str) -> Dict[str
             'suitable_for': 'showing rankings'
         }
     
+    # Scatter for correlations
     if len(numeric_cols) >= 2:
         return {
             'chart_type': 'scatter_plot',
@@ -663,6 +651,7 @@ def select_chart_type(structure: Dict[str, Any], query_context: str) -> Dict[str
             'suitable_for': 'relationships between variables'
         }
     
+    # Summary metrics
     if len(numeric_cols) == 1 and row_count <= 5:
         return {
             'chart_type': 'metric_card',
@@ -670,6 +659,7 @@ def select_chart_type(structure: Dict[str, Any], query_context: str) -> Dict[str
             'suitable_for': 'key metrics'
         }
     
+    # Default
     if categorical_cols and numeric_cols:
         return {
             'chart_type': 'bar_chart',
@@ -696,6 +686,7 @@ def map_columns_to_chart(
     chart_selection: Dict[str, Any],
     query_context: str
 ) -> Optional[Dict[str, Any]]:
+    """Use LLM to map columns to chart roles"""
     chart_type = chart_selection.get('chart_type')
     if not chart_type or chart_type == 'metric_card':
         return None
@@ -732,9 +723,11 @@ Output valid JSON mapping only."""
         structured_llm = llm.with_structured_output(VizColumnMapping)
         mapping = structured_llm.invoke(prompt)
         
+        # Validate columns exist
         for field in ['x', 'y', 'color', 'facet']:
             value = getattr(mapping, field)
             if value and value not in available_columns:
+                print(f"Warning: {field}='{value}' not in columns {available_columns}")
                 return None
         
         return {
@@ -745,20 +738,75 @@ Output valid JSON mapping only."""
         }
     
     except Exception as e:
+        print(f"Column mapping failed: {e}")
+        return None
+
+
+def create_plotly_chart(df: pd.DataFrame, spec: Dict[str, Any]) -> Optional[go.Figure]:
+    """Create Plotly chart from specification"""
+    try:
+        chart_type = spec['type']
+        x_col = spec['x']
+        y_col = spec['y']
+        color_col = spec.get('color')
+        title = spec.get('title', 'Chart')
+        
+        # Validate columns exist
+        if x_col not in df.columns or y_col not in df.columns:
+            print(f"Missing columns: x={x_col}, y={y_col} in {df.columns.tolist()}")
+            return None
+        
+        if color_col and color_col not in df.columns:
+            print(f"Color column {color_col} not found, ignoring")
+            color_col = None
+        
+        # Create chart
+        fig = None
+        
+        if chart_type == 'bar_chart':
+            if color_col:
+                fig = px.bar(df, x=x_col, y=y_col, color=color_col, title=title)
+            else:
+                fig = px.bar(df, x=x_col, y=y_col, title=title)
+        
+        elif chart_type == 'line_chart':
+            if color_col:
+                fig = px.line(df, x=x_col, y=y_col, color=color_col, title=title, markers=True)
+            else:
+                fig = px.line(df, x=x_col, y=y_col, title=title, markers=True)
+        
+        elif chart_type == 'scatter_plot':
+            if color_col:
+                fig = px.scatter(df, x=x_col, y=y_col, color=color_col, title=title)
+            else:
+                fig = px.scatter(df, x=x_col, y=y_col, title=title)
+        
+        if fig:
+            fig.update_layout(
+                template="plotly_white",
+                height=400,
+                margin=dict(l=20, r=20, t=40, b=20),
+                font=dict(size=12)
+            )
+        
+        return fig
+    
+    except Exception as e:
+        print(f"Chart creation failed: {e}")
+        import traceback
+        traceback.print_exc()
         return None
 
 
 def visualization_specification_agent(state: AgentState) -> dict:
+    """Generate viz specs from actual data"""
     execution_path = state.get('execution_path', [])
     execution_path.append('visualization_spec')
     
     analysis_results = state.get('analysis_results', {})
-    
-    if not should_visualize(analysis_results, state.get('user_query', '')):
-        return {"execution_path": execution_path, "visualization_specs": []}
-    
     raw_data = analysis_results.get('raw_data', [])
     
+    # Extract data from tool results
     df = None
     for result in raw_data:
         if result.get('success') and result.get('data'):
@@ -766,25 +814,47 @@ def visualization_specification_agent(state: AgentState) -> dict:
             break
     
     if df is None or df.empty:
-        return {"execution_path": execution_path, "visualization_specs": []}
+        print("No data for visualization")
+        return {
+            "execution_path": execution_path,
+            "visualization_specs": [],
+            "rendered_charts": []
+        }
     
+    # Limit rows
     if len(df) > 100:
+        print(f"Limiting data from {len(df)} to 100 rows")
         df = df.head(100)
     
+    print(f"Analyzing data structure: {df.shape}")
     structure = analyze_data_structure(df)
+    print(f"Columns: {structure['columns']}")
+    print(f"Types: {structure['column_types']}")
     
     chart_selection = select_chart_type(structure, state['user_query'])
+    print(f"Selected chart type: {chart_selection.get('chart_type')}")
     
     if not chart_selection.get('chart_type'):
-        return {"execution_path": execution_path, "visualization_specs": []}
+        print(f"No chart selected: {chart_selection.get('warning')}")
+        return {
+            "execution_path": execution_path,
+            "visualization_specs": [],
+            "rendered_charts": []
+        }
     
+    # Map columns
     column_mapping = map_columns_to_chart(structure, chart_selection, state['user_query'])
     
     if not column_mapping:
+        # Fallback mapping
+        print("Using fallback column mapping")
         x_col = (structure['temporal_columns'] or structure['categorical_columns'] or structure['columns'])[0]
         y_col = structure['numeric_columns'][0] if structure['numeric_columns'] else structure['columns'][1]
         column_mapping = {'x': x_col, 'y': y_col, 'color': None, 'facet': None}
     
+    print(f"Column mapping: {column_mapping}")
+    
+    # Create spec
     viz_spec = {
         'type': chart_selection['chart_type'],
         'title': f"{state['user_query'][:60]}...",
@@ -795,79 +865,40 @@ def visualization_specification_agent(state: AgentState) -> dict:
         'data': df.to_dict('records')
     }
     
+    # Immediately create chart
+    fig = create_plotly_chart(df, viz_spec)
+    
+    rendered_charts = []
+    if fig:
+        rendered_charts.append({
+            'title': viz_spec['title'],
+            'figure': fig,
+            'type': chart_selection['chart_type']
+        })
+        print(f"✓ Chart created successfully: {chart_selection['chart_type']}")
+    else:
+        print("✗ Chart creation failed")
+    
     return {
         "visualization_specs": [viz_spec],
+        "rendered_charts": rendered_charts,  # Pass charts here!
         "execution_path": execution_path,
-        "requires_visualization": True
+        "requires_visualization": len(rendered_charts) > 0
     }
 
 
 def visualization_rendering_agent(state: AgentState) -> dict:
+    """
+    This agent is now mostly a pass-through since we render in spec agent.
+    Kept for backwards compatibility.
+    """
     execution_path = state.get('execution_path', [])
     execution_path.append('visualization_rendering')
     
-    viz_specs = state.get('visualization_specs', [])
+    # Charts already created in spec agent
+    rendered_charts = state.get('rendered_charts', [])
     
-    if not viz_specs:
-        return {"execution_path": execution_path}
-    
-    rendered_charts = []
-    
-    for spec in viz_specs:
-        try:
-            df = pd.DataFrame(spec['data'])
-            
-            if df.empty:
-                continue
-            
-            chart_type = spec['type']
-            x_col = spec['x']
-            y_col = spec['y']
-            color_col = spec.get('color')
-            
-            if x_col not in df.columns or y_col not in df.columns:
-                continue
-            
-            fig = None
-            
-            if chart_type == 'bar_chart':
-                if color_col and color_col in df.columns:
-                    fig = px.bar(df, x=x_col, y=y_col, color=color_col, title=spec['title'])
-                else:
-                    fig = px.bar(df, x=x_col, y=y_col, title=spec['title'])
-            
-            elif chart_type == 'line_chart':
-                if color_col and color_col in df.columns:
-                    fig = px.line(df, x=x_col, y=y_col, color=color_col, title=spec['title'])
-                else:
-                    fig = px.line(df, x=x_col, y=y_col, title=spec['title'])
-            
-            elif chart_type == 'scatter_plot':
-                if color_col and color_col in df.columns:
-                    fig = px.scatter(df, x=x_col, y=y_col, color=color_col, title=spec['title'])
-                else:
-                    fig = px.scatter(df, x=x_col, y=y_col, title=spec['title'])
-            
-            else:
-                continue
-            
-            if fig:
-                fig.update_layout(
-                    template="plotly_white",
-                    height=400,
-                    margin=dict(l=20, r=20, t=40, b=20)
-                )
-                
-                rendered_charts.append({
-                    'title': spec['title'],
-                    'figure': fig,
-                    'type': chart_type
-                })
-        
-        except Exception as e:
-            import traceback
-            traceback.print_exc()
-            continue
+    print(f"Rendering agent: {len(rendered_charts)} charts already created")
     
     return {
         "rendered_charts": rendered_charts,
@@ -876,28 +907,35 @@ def visualization_rendering_agent(state: AgentState) -> dict:
 
 
 def insight_generation_agent(state: AgentState) -> dict:
+    """Generate insights WITH inline chart references"""
     execution_path = state.get('execution_path', [])
     execution_path.append('insight_generation')
     
     analysis_results = state.get('analysis_results', {})
     context_docs = state.get('context_documents', [])
     comparison_type = state.get('comparison_type')
-    generated_sql = state.get('generated_sql')
-    sql_purpose = state.get('sql_purpose')
     rendered_charts = state.get('rendered_charts', [])
     
+    # Build chart context
     viz_context = ""
     if rendered_charts:
         viz_descriptions = []
-        for chart in rendered_charts:
-            viz_descriptions.append(f"- {chart['type'].replace('_', ' ').title()}: {chart['title']}")
-        viz_context = f"\n\nVisualizations Generated:\n" + "\n".join(viz_descriptions)
+        for i, chart in enumerate(rendered_charts, 1):
+            chart_type = chart['type'].replace('_', ' ').title()
+            viz_descriptions.append(f"**Chart {i}**: {chart_type} - {chart['title']}")
+        
+        viz_context = f"""
+
+📊 **Visualizations Generated:**
+{chr(10).join(viz_descriptions)}
+
+The charts are displayed above/below this text. Reference them naturally in your explanation.
+"""
     
     prompt = f"""Generate a clear, business-focused explanation of the analysis results.
 
 Query: {state['user_query']}
 Comparison Type: {comparison_type}
-SQL Query Purpose: {sql_purpose}
 
 Analysis Results:
 {json.dumps(analysis_results, indent=2, default=str)}
@@ -906,170 +944,25 @@ Context:
 {json.dumps(context_docs, indent=2)}
 {viz_context}
 
-Provide:
+**Instructions:**
 1. Direct answer to the user's question
 2. Key quantitative findings (numbers, percentages)
-3. Contextual reasoning (WHY these results occurred)
-4. Business implications
-5. Recommendations (if applicable)
-6. Reference to visualizations if generated (e.g., "As shown in the bar chart above...")
+3. **Reference the charts naturally** (e.g., "As shown in Chart 1 above...", "The bar chart illustrates...")
+4. Contextual reasoning (WHY these results occurred)
+5. Business implications
+6. Recommendations (if applicable)
 
-Keep language simple and avoid technical jargon. Focus on actionable insights."""
+Keep language simple and avoid technical jargon. Focus on actionable insights.
+Structure your response to flow naturally with the visualizations."""
     
     response = llm.invoke(prompt)
     
     return {
         "messages": [AIMessage(content=response.content)],
         "final_insights": response.content,
+        "rendered_charts": rendered_charts,  # Preserve charts
         "execution_path": execution_path
     }
-
-def _get_default_viz_specs(comparison_type: str) -> List[Dict[str, Any]]:
-    defaults = {
-        'ensemble_vs_base': [
-            {
-                "type": "bar_chart",
-                "title": "Model Performance Comparison",
-                "data_key": "computed_metrics",
-                "x": "metric_name",
-                "y": "improvement_percentage",
-                "additional_params": {}
-            }
-        ],
-        'performance': [
-            {
-                "type": "bar_chart",
-                "title": "Performance Metrics",
-                "data_key": "raw_data",
-                "x": "model_name",
-                "y": "metric_value",
-                "additional_params": {}
-            }
-        ],
-        'drift': [
-            {
-                "type": "line_chart",
-                "title": "Drift Score Over Time",
-                "data_key": "raw_data",
-                "x": "timestamp",
-                "y": "drift_score",
-                "additional_params": {}
-            }
-        ]
-    }
-    
-    return defaults.get(comparison_type, [])
-
-def _render_chart(spec: Dict[str, Any], analysis_results: Dict[str, Any]) -> Any:
-    import pandas as pd
-    import plotly.express as px
-    
-    data_key = spec.get('data_key', 'raw_data')
-    data = analysis_results.get(data_key)
-    
-    print(f"Rendering chart: {spec.get('title')}")
-    print(f"Data key: {data_key}")
-    print(f"Data type: {type(data)}")
-    
-    if not data:
-        print(f"No data found for key: {data_key}")
-        return None
-    
-    # Convert data to DataFrame
-    df = None
-    
-    if isinstance(data, pd.DataFrame):
-        df = data
-    elif isinstance(data, dict):
-        if data_key == 'computed_metrics':
-            # Handle computed metrics format
-            rows = []
-            for metric_name, metric_values in data.items():
-                row = {'metric_name': metric_name}
-                row.update(metric_values)
-                rows.append(row)
-            df = pd.DataFrame(rows)
-        else:
-            # Try to convert dict to DataFrame
-            try:
-                df = pd.DataFrame([data])
-            except:
-                df = pd.DataFrame(data)
-    elif isinstance(data, list):
-        if data and isinstance(data[0], dict):
-            if 'data' in data[0]:
-                df = pd.DataFrame(data[0]['data'])
-            else:
-                df = pd.DataFrame(data)
-        else:
-            try:
-                df = pd.DataFrame(data)
-            except:
-                print(f"Could not convert list to DataFrame")
-                return None
-    else:
-        print(f"Unsupported data type: {type(data)}")
-        return None
-    
-    if df is None or df.empty:
-        print("DataFrame is empty or None")
-        return None
-    
-    print(f"DataFrame shape: {df.shape}")
-    print(f"DataFrame columns: {df.columns.tolist()}")
-    
-    chart_type = spec.get('type')
-    title = spec.get('title', 'Chart')
-    x_col = spec.get('x')
-    y_col = spec.get('y')
-    
-    # Verify columns exist
-    if x_col and x_col not in df.columns:
-        print(f"Warning: x column '{x_col}' not found in DataFrame. Available: {df.columns.tolist()}")
-        # Try to find a suitable column
-        x_col = df.columns[0] if len(df.columns) > 0 else None
-    
-    if y_col and y_col not in df.columns:
-        print(f"Warning: y column '{y_col}' not found in DataFrame. Available: {df.columns.tolist()}")
-        # Try to find a suitable column
-        y_col = df.columns[1] if len(df.columns) > 1 else df.columns[0]
-    
-    try:
-        fig = None
-        
-        if chart_type == 'bar_chart':
-            fig = px.bar(df, x=x_col, y=y_col, title=title)
-        elif chart_type == 'line_chart':
-            fig = px.line(df, x=x_col, y=y_col, title=title)
-        elif chart_type == 'scatter_plot':
-            fig = px.scatter(df, x=x_col, y=y_col, title=title)
-        elif chart_type == 'heatmap':
-            if df.shape[0] > 1 and df.select_dtypes(include=[np.number]).shape[1] > 1:
-                fig = px.imshow(df.select_dtypes(include=[np.number]).corr(), title=title)
-            else:
-                print("Not enough numeric data for heatmap")
-                return None
-        elif chart_type == 'box_plot':
-            fig = px.box(df, y=y_col, title=title)
-        else:
-            print(f"Unknown chart type: {chart_type}")
-            return None
-        
-        if fig:
-            # Update layout for better display
-            fig.update_layout(
-                template="plotly_white",
-                height=400,
-                margin=dict(l=20, r=20, t=40, b=20)
-            )
-        
-        return fig
-        
-    except Exception as e:
-        print(f"Chart rendering error: {e}")
-        import traceback
-        traceback.print_exc()
-        return None
 
 def orchestrator_agent(state: AgentState) -> dict:
     needs_clarification = state.get('needs_clarification', False)
