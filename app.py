@@ -405,8 +405,10 @@ def process_query(user_input):
             st.session_state.conversation_state.update(final_state)
             final_insights = extract_final_insights(final_state, all_messages)
             
-            # Get rendered charts
-            rendered_charts = final_state.get('rendered_charts', [])
+            # Get rendered charts with safe fallback
+            rendered_charts = final_state.get('rendered_charts')
+            if rendered_charts is None:
+                rendered_charts = []
             
             print(f"DEBUG: Final state has {len(rendered_charts)} charts")
             for chart in rendered_charts:
@@ -416,7 +418,7 @@ def process_query(user_input):
                 'type': 'assistant',
                 'content': final_insights,
                 'state': final_state,
-                'visualizations': rendered_charts,  # Key: pass charts here
+                'visualizations': rendered_charts,  # Safe: always a list
                 'insights': final_insights,
                 'tool_results': format_tool_results(all_messages)
             }
