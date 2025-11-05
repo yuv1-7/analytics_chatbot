@@ -556,66 +556,373 @@ def _compute_basic_metrics(data: List[Dict[str, Any]]) -> Dict[str, Any]:
         metrics['models_analyzed'] = model_names
     
     return metrics
+
+def analyze_data_structure(df: pd.DataFrame) -> Dict[str, Any]:
+    structure = {
+        'row_count': len(df),
+        'columns': list(df.columns),
+        'column_types': {},
+        'cardinality': {},
+        'has_temporal': False,
+        'temporal_columns': [],
+        'numeric_columns': [],
+        'categorical_columns': []
+    }
+    
+    for col in df.columns:
+        if pd.api.types.is_numeric_dtype(df[col]):
+            structure['column_types'][col] = 'numeric'
+            structure['numeric_columns'].append(col)
+        elif pd.api.types.is_datetime64_any_dtype(df[col]):
+            structure['column_types'][col] = 'temporal'
+            structure['temporal_columns'].append(col)
+            structure['has_temporal'] = True
+        else:
+            try:
+                parsed = pd.to_datetime(df[col], errors='coerce')
+                if parsed.notna().sum() > 0.8 * len(df):
+                    structure['column_types'][col] = 'temporal'
+                    structure['temporal_columns'].append(col)
+                    structure['has_temporal'] = True
+                    continue
+            except:
+                pass
+            
+            structure['column_types'][col] = 'categorical'
+            structure['categorical_columns'].append(col)
+        
+        structure['cardinality'][col] = df[col].nunique()
+    
+    return structure
+
+
+def should_visualize(analysis_results: Dict[str, Any], query_context: str) -> bool:
+    raw_data = analysis_results.get('raw_data', [])
+    
+    if not raw_data:
+        return False
+    
+    for result in raw_data:
+        if result.get('success') and result.get('data'):
+            data = result['data']
+            if len(data) > 1:
+                return True
+    
+    computed_metrics = analysis_results.get('computed_metrics', {})
+    if computed_metrics and len(computed_metrics) > 1:
+        return True
+    
+    viz_keywords = ['compare', 'trend', 'performance', 'over time', 'distribution', 'ranking', 'top', 'vs']
+    query_lower = query_context.lower()
+    return any(keyword in query_lower for keyword in viz_keywords)
+
+
+def select_chart_type(structure: Dict[str, Any], query_context: str) -> Dict[str, Any]:
+    row_count = structure['row_count']
+    temporal_cols = structure['temporal_columns']
+    numeric_cols = structure['numeric_columns']
+    categorical_cols = structure['categorical_columns']
+    cardinality = structure['cardinality']
+    
+    if row_count > 100:
+        high_card_cats = [col for col in categorical_cols if cardinality.get(col, 0) > 50]
+        if high_card_cats:
+            return {
+                'chart_type': None,
+                'warning': f'Too many unique values in {high_card_cats[0]} ({cardinality[high_card_cats[0]]} values)',
+                'suggestion': 'Consider filtering or aggregating data'
+            }
+    
+    if temporal_cols and numeric_cols:
+        return {
+            'chart_type': 'line_chart',
+            'primary_role': 'temporal',
+            'suitable_for': 'trends over time'
+        }
+    
+    low_card_cats = [col for col in categorical_cols if cardinality.get(col, 0) <= 20]
+    if low_card_cats and numeric_cols:
+        return {
+            'chart_type': 'bar_chart',
+            'primary_role': 'comparison',
+            'suitable_for': 'comparing categories'
+        }
+    
+    if 'rank' in [c.lower() for c in structure['columns']] or \
+       any('importance' in c.lower() for c in structure['columns']):
+        return {
+            'chart_type': 'bar_chart',
+            'primary_role': 'ranking',
+            'suitable_for': 'showing rankings'
+        }
+    
+    if len(numeric_cols) >= 2:
+        return {
+            'chart_type': 'scatter_plot',
+            'primary_role': 'correlation',
+            'suitable_for': 'relationships between variables'
+        }
+    
+    if len(numeric_cols) == 1 and row_count <= 5:
+        return {
+            'chart_type': 'metric_card',
+            'primary_role': 'summary',
+            'suitable_for': 'key metrics'
+        }
+    
+    if categorical_cols and numeric_cols:
+        return {
+            'chart_type': 'bar_chart',
+            'primary_role': 'general',
+            'suitable_for': 'general comparison'
+        }
+    
+    return {
+        'chart_type': None,
+        'warning': 'No suitable visualization pattern detected',
+        'suggestion': 'Data may be better viewed as a table'
+    }
+
+
+class VizColumnMapping(BaseModel):
+    x: str = Field(description="Column name for x-axis")
+    y: str = Field(description="Column name for y-axis")
+    color: Optional[str] = Field(default=None, description="Column name for color grouping")
+    facet: Optional[str] = Field(default=None, description="Column name for faceting")
+
+
+def map_columns_to_chart(
+    structure: Dict[str, Any],
+    chart_selection: Dict[str, Any],
+    query_context: str
+) -> Optional[Dict[str, Any]]:
+    chart_type = chart_selection.get('chart_type')
+    if not chart_type or chart_type == 'metric_card':
+        return None
+    
+    available_columns = structure['columns']
+    column_types = structure['column_types']
+    
+    column_info = []
+    for col in available_columns:
+        col_type = column_types[col]
+        cardinality = structure['cardinality'][col]
+        column_info.append(f"- {col} ({col_type}, {cardinality} unique values)")
+    
+    prompt = f"""Map semantic roles to EXACT column names for a {chart_type}.
+
+AVAILABLE COLUMNS:
+{chr(10).join(column_info)}
+
+USER QUERY CONTEXT: {query_context}
+
+RULES:
+1. Use ONLY column names from the available columns list above
+2. For {chart_type}:
+   - x: {'temporal column' if chart_type == 'line_chart' else 'categorical column for grouping'}
+   - y: numeric column to visualize
+   - color: optional categorical column for grouping (only if relevant)
+   - facet: optional categorical column for subplots (only if relevant)
+3. Choose columns that best answer the user's query
+4. Leave color/facet as null if not needed
+
+Output valid JSON mapping only."""
+    
+    try:
+        structured_llm = llm.with_structured_output(VizColumnMapping)
+        mapping = structured_llm.invoke(prompt)
+        
+        for field in ['x', 'y', 'color', 'facet']:
+            value = getattr(mapping, field)
+            if value and value not in available_columns:
+                return None
+        
+        return {
+            'x': mapping.x,
+            'y': mapping.y,
+            'color': mapping.color,
+            'facet': mapping.facet
+        }
+    
+    except Exception as e:
+        return None
+
+
 def visualization_specification_agent(state: AgentState) -> dict:
     execution_path = state.get('execution_path', [])
     execution_path.append('visualization_spec')
     
-    if not state.get('requires_visualization'):
-        return {"execution_path": execution_path}
-    
     analysis_results = state.get('analysis_results', {})
-    comparison_type = state.get('comparison_type')
     
-    prompt = f"""
-Based on the query and analysis results, generate visualization specifications.
-
-Query: {state['user_query']}
-Comparison Type: {comparison_type}
-Analysis Results Available: {list(analysis_results.keys())}
-
-Output a JSON with visualization specs. Each spec should include:
-- type: bar_chart, line_chart, scatter_plot, heatmap, box_plot
-- title: Descriptive title
-- data_key: Which key from analysis_results to use
-- x, y: Column names for axes
-- additional_params: Any extra configuration
-
-Example output:
-{{
-    "visualizations": [
-        {{
-            "type": "bar_chart",
-            "title": "Ensemble vs Base Model Performance",
-            "data_key": "computed_metrics",
-            "x": "metric_name",
-            "y": "improvement_percentage",
-            "additional_params": {{"color": "metric_name"}}
-        }}
-    ]
-}}
-"""
+    if not should_visualize(analysis_results, state.get('user_query', '')):
+        return {"execution_path": execution_path, "visualization_specs": []}
     
-    structured_llm = llm.with_structured_output(VisualizationSpec)
+    raw_data = analysis_results.get('raw_data', [])
     
-    try:
-        result = structured_llm.invoke(prompt)
-        # Convert Pydantic models to dictionaries
-        if hasattr(result, 'visualizations'):
-            viz_specs = [
-                v.dict() if hasattr(v, 'dict') else v.model_dump() if hasattr(v, 'model_dump') else v
-                for v in result.visualizations
-            ]
-        else:
-            viz_specs = _get_default_viz_specs(comparison_type)
-    except Exception as e:
-        print(f"Visualization spec generation failed: {e}")
-        viz_specs = _get_default_viz_specs(comparison_type)
+    df = None
+    for result in raw_data:
+        if result.get('success') and result.get('data'):
+            df = pd.DataFrame(result['data'])
+            break
+    
+    if df is None or df.empty:
+        return {"execution_path": execution_path, "visualization_specs": []}
+    
+    if len(df) > 100:
+        df = df.head(100)
+    
+    structure = analyze_data_structure(df)
+    
+    chart_selection = select_chart_type(structure, state['user_query'])
+    
+    if not chart_selection.get('chart_type'):
+        return {"execution_path": execution_path, "visualization_specs": []}
+    
+    column_mapping = map_columns_to_chart(structure, chart_selection, state['user_query'])
+    
+    if not column_mapping:
+        x_col = (structure['temporal_columns'] or structure['categorical_columns'] or structure['columns'])[0]
+        y_col = structure['numeric_columns'][0] if structure['numeric_columns'] else structure['columns'][1]
+        column_mapping = {'x': x_col, 'y': y_col, 'color': None, 'facet': None}
+    
+    viz_spec = {
+        'type': chart_selection['chart_type'],
+        'title': f"{state['user_query'][:60]}...",
+        'x': column_mapping['x'],
+        'y': column_mapping['y'],
+        'color': column_mapping.get('color'),
+        'facet': column_mapping.get('facet'),
+        'data': df.to_dict('records')
+    }
     
     return {
-        "visualization_specs": viz_specs,
+        "visualization_specs": [viz_spec],
+        "execution_path": execution_path,
+        "requires_visualization": True
+    }
+
+
+def visualization_rendering_agent(state: AgentState) -> dict:
+    execution_path = state.get('execution_path', [])
+    execution_path.append('visualization_rendering')
+    
+    viz_specs = state.get('visualization_specs', [])
+    
+    if not viz_specs:
+        return {"execution_path": execution_path}
+    
+    rendered_charts = []
+    
+    for spec in viz_specs:
+        try:
+            df = pd.DataFrame(spec['data'])
+            
+            if df.empty:
+                continue
+            
+            chart_type = spec['type']
+            x_col = spec['x']
+            y_col = spec['y']
+            color_col = spec.get('color')
+            
+            if x_col not in df.columns or y_col not in df.columns:
+                continue
+            
+            fig = None
+            
+            if chart_type == 'bar_chart':
+                if color_col and color_col in df.columns:
+                    fig = px.bar(df, x=x_col, y=y_col, color=color_col, title=spec['title'])
+                else:
+                    fig = px.bar(df, x=x_col, y=y_col, title=spec['title'])
+            
+            elif chart_type == 'line_chart':
+                if color_col and color_col in df.columns:
+                    fig = px.line(df, x=x_col, y=y_col, color=color_col, title=spec['title'])
+                else:
+                    fig = px.line(df, x=x_col, y=y_col, title=spec['title'])
+            
+            elif chart_type == 'scatter_plot':
+                if color_col and color_col in df.columns:
+                    fig = px.scatter(df, x=x_col, y=y_col, color=color_col, title=spec['title'])
+                else:
+                    fig = px.scatter(df, x=x_col, y=y_col, title=spec['title'])
+            
+            else:
+                continue
+            
+            if fig:
+                fig.update_layout(
+                    template="plotly_white",
+                    height=400,
+                    margin=dict(l=20, r=20, t=40, b=20)
+                )
+                
+                rendered_charts.append({
+                    'title': spec['title'],
+                    'figure': fig,
+                    'type': chart_type
+                })
+        
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            continue
+    
+    return {
+        "rendered_charts": rendered_charts,
         "execution_path": execution_path
     }
 
+
+def insight_generation_agent(state: AgentState) -> dict:
+    execution_path = state.get('execution_path', [])
+    execution_path.append('insight_generation')
+    
+    analysis_results = state.get('analysis_results', {})
+    context_docs = state.get('context_documents', [])
+    comparison_type = state.get('comparison_type')
+    generated_sql = state.get('generated_sql')
+    sql_purpose = state.get('sql_purpose')
+    rendered_charts = state.get('rendered_charts', [])
+    
+    viz_context = ""
+    if rendered_charts:
+        viz_descriptions = []
+        for chart in rendered_charts:
+            viz_descriptions.append(f"- {chart['type'].replace('_', ' ').title()}: {chart['title']}")
+        viz_context = f"\n\nVisualizations Generated:\n" + "\n".join(viz_descriptions)
+    
+    prompt = f"""Generate a clear, business-focused explanation of the analysis results.
+
+Query: {state['user_query']}
+Comparison Type: {comparison_type}
+SQL Query Purpose: {sql_purpose}
+
+Analysis Results:
+{json.dumps(analysis_results, indent=2, default=str)}
+
+Context:
+{json.dumps(context_docs, indent=2)}
+{viz_context}
+
+Provide:
+1. Direct answer to the user's question
+2. Key quantitative findings (numbers, percentages)
+3. Contextual reasoning (WHY these results occurred)
+4. Business implications
+5. Recommendations (if applicable)
+6. Reference to visualizations if generated (e.g., "As shown in the bar chart above...")
+
+Keep language simple and avoid technical jargon. Focus on actionable insights."""
+    
+    response = llm.invoke(prompt)
+    
+    return {
+        "messages": [AIMessage(content=response.content)],
+        "final_insights": response.content,
+        "execution_path": execution_path
+    }
 
 def _get_default_viz_specs(comparison_type: str) -> List[Dict[str, Any]]:
     defaults = {
@@ -652,46 +959,6 @@ def _get_default_viz_specs(comparison_type: str) -> List[Dict[str, Any]]:
     }
     
     return defaults.get(comparison_type, [])
-
-
-def visualization_rendering_agent(state: AgentState) -> dict:
-    execution_path = state.get('execution_path', [])
-    execution_path.append('visualization_rendering')
-    
-    viz_specs = state.get('visualization_specs', [])
-    analysis_results = state.get('analysis_results', {})
-    
-    if not viz_specs:
-        print("No visualization specs found")
-        return {"execution_path": execution_path}
-    
-    rendered_charts = []
-    
-    for spec in viz_specs:
-        try:
-            chart = _render_chart(spec, analysis_results)
-            if chart:
-                rendered_charts.append({
-                    'title': spec.get('title', 'Chart'),
-                    'figure': chart,
-                    'type': spec.get('type', 'unknown')
-                })
-                print(f"Successfully rendered chart: {spec.get('title')}")
-            else:
-                print(f"Failed to render chart: {spec.get('title')}")
-        except Exception as e:
-            print(f"Failed to render chart '{spec.get('title')}': {e}")
-            import traceback
-            traceback.print_exc()
-            continue
-    
-    print(f"Total charts rendered: {len(rendered_charts)}")
-    
-    return {
-        "rendered_charts": rendered_charts,
-        "execution_path": execution_path
-    }
-
 
 def _render_chart(spec: Dict[str, Any], analysis_results: Dict[str, Any]) -> Any:
     import pandas as pd
@@ -803,47 +1070,6 @@ def _render_chart(spec: Dict[str, Any], analysis_results: Dict[str, Any]) -> Any
         import traceback
         traceback.print_exc()
         return None
-
-
-def insight_generation_agent(state: AgentState) -> dict:
-    execution_path = state.get('execution_path', [])
-    execution_path.append('insight_generation')
-    
-    analysis_results = state.get('analysis_results', {})
-    context_docs = state.get('context_documents', [])
-    comparison_type = state.get('comparison_type')
-    generated_sql = state.get('generated_sql')
-    sql_purpose = state.get('sql_purpose')
-    
-    prompt = f"""Generate a clear, business-focused explanation of the analysis results.
-
-Query: {state['user_query']}
-Comparison Type: {comparison_type}
-SQL Query Purpose: {sql_purpose}
-
-Analysis Results:
-{json.dumps(analysis_results, indent=2, default=str)}
-
-Context:
-{json.dumps(context_docs, indent=2)}
-
-Provide:
-1. Direct answer to the user's question
-2. Key quantitative findings (numbers, percentages)
-3. Contextual reasoning (WHY these results occurred)
-4. Business implications
-5. Recommendations (if applicable)
-
-Keep language simple and avoid technical jargon. Focus on actionable insights."""
-    
-    response = llm.invoke(prompt)
-    
-    return {
-        "messages": [AIMessage(content=response.content)],
-        "final_insights": response.content,
-        "execution_path": execution_path
-    }
-
 
 def orchestrator_agent(state: AgentState) -> dict:
     needs_clarification = state.get('needs_clarification', False)
