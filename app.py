@@ -244,25 +244,72 @@ def format_tool_results(messages):
     
     return results_data if results_data else None
 
+def display_chat_message(message):
+    """Display chat message with inline charts"""
+    if message['type'] == 'user':
+        st.markdown(f"""
+        <div class="chat-message">
+            <div class="message-header">👤 You</div>
+            <div class="message-content">{message['content']}</div>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    elif message['type'] == 'assistant':
+        # Display insights text
+        st.markdown(f"""
+        <div class="chat-message">
+            <div class="message-header">🤖 Assistant</div>
+            <div class="message-content">{message['content']}</div>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        # Display visualizations IMMEDIATELY after text
+        if message.get('visualizations'):
+            st.markdown("---")
+            for i, chart_data in enumerate(message['visualizations'], 1):
+                title = chart_data.get('title', f'Chart {i}')
+                figure = chart_data.get('figure')
+                
+                if figure:
+                    st.plotly_chart(figure, use_container_width=True, key=f"chart_{id(message)}_{i}")
+                else:
+                    st.warning(f"⚠️ Chart {i}: {title} - No figure data available")
+            st.markdown("---")
+        
+        # Optional: Show data tables in expander (not charts)
+        if message.get('tool_results'):
+            with st.expander("📄 Retrieved Data", expanded=False):
+                display_data_table(message['tool_results'])
+        
+        # Optional: Show metrics in expander
+        if message.get('state') and message['state'].get('analysis_results'):
+            display_analysis_metrics(message['state'])
+    
+    elif message['type'] == 'error':
+        st.error(f"⚠️ {message['content']}")
+
+
 def display_data_table(results_data):
+    """Display data tables in expander"""
     if not results_data:
         return
     
-    with st.expander("📄 Retrieved Data", expanded=False):
-        for i, result in enumerate(results_data, 1):
-            st.write(f"**Result Set {i}**")
-            
-            col1, col2, col3 = st.columns(3)
-            col1.metric("Rows", result['row_count'])
-            col2.metric("Columns", len(result['columns']))
-            col3.metric("Showing", f"{min(5, result['total_rows'])}/{result['total_rows']}")
-            
-            if result['data']:
-                import pandas as pd
-                df = pd.DataFrame(result['data'])
-                st.dataframe(df, use_container_width=True)
+    for i, result in enumerate(results_data, 1):
+        st.write(f"**Result Set {i}**")
+        
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Rows", result['row_count'])
+        col2.metric("Columns", len(result['columns']))
+        col3.metric("Showing", f"{min(5, result['total_rows'])}/{result['total_rows']}")
+        
+        if result['data']:
+            import pandas as pd
+            df = pd.DataFrame(result['data'])
+            st.dataframe(df, use_container_width=True)
+
 
 def display_analysis_metrics(state):
+    """Display computed metrics in expander"""
     analysis_results = state.get('analysis_results')
     
     if not analysis_results:
@@ -271,7 +318,7 @@ def display_analysis_metrics(state):
     computed_metrics = analysis_results.get('computed_metrics', {})
     
     if computed_metrics:
-        with st.expander("📈 Computed Metrics", expanded=True):
+        with st.expander("📈 Computed Metrics", expanded=False):
             for metric_name, values in computed_metrics.items():
                 st.write(f"**{metric_name}**")
                 if isinstance(values, dict):
@@ -284,48 +331,22 @@ def display_analysis_metrics(state):
                 else:
                     st.write(values)
 
-def display_visualizations(state):
-    rendered_charts = state.get('rendered_charts', [])
-    
-    if not rendered_charts:
-        return
-    
-    st.markdown('<div class="section-header">📊 Visualizations</div>', unsafe_allow_html=True)
-    
-    for i, chart_data in enumerate(rendered_charts):
-        title = chart_data.get('title', f'Chart {i+1}')
-        figure = chart_data.get('figure')
-        
-        if figure:
-            st.plotly_chart(figure, use_container_width=True, key=f"chart_{i}")
-        else:
-            st.warning(f"No figure data available for {title}")
 
 def extract_final_insights(final_state, all_messages):
-    """
-    Extract final insights from state or messages with better fallback handling
-    """
+    """Extract insights with fallback logic"""
     if final_state.get('final_insights'):
         return final_state['final_insights']
     
+    # Check AI messages for insights
     ai_messages = [msg for msg in all_messages if isinstance(msg, AIMessage)]
     if ai_messages:
         last_ai_msg = ai_messages[-1]
         if hasattr(last_ai_msg, 'content') and last_ai_msg.content:
-            # Don't return tool call descriptions
             if not ("Generated SQL query" in last_ai_msg.content or 
                     "execute_sql_query" in str(last_ai_msg.content)):
                 return last_ai_msg.content
     
-    state_messages = final_state.get('messages', [])
-    ai_messages_state = [msg for msg in state_messages if isinstance(msg, AIMessage)]
-    if ai_messages_state:
-        last_ai_msg = ai_messages_state[-1]
-        if hasattr(last_ai_msg, 'content') and last_ai_msg.content:
-            if not ("Generated SQL query" in last_ai_msg.content or 
-                    "execute_sql_query" in str(last_ai_msg.content)):
-                return last_ai_msg.content
-    
+    # Fallback to analysis summary
     analysis_results = final_state.get('analysis_results')
     if analysis_results:
         summary_parts = []
@@ -346,25 +367,18 @@ def extract_final_insights(final_state, all_messages):
         if summary_parts:
             return "\n".join(summary_parts)
     
-    execution_path = final_state.get('execution_path', [])
-    if execution_path:
-        return f"Analysis completed successfully. Execution path: {' → '.join(execution_path)}"
-    
     return "Analysis completed."
 
+
 def process_query(user_input):
+    """Process query with improved chart handling"""
     start_time = time.time()
     
-    # Reset conversation state
+    # Reset state
     st.session_state.conversation_state["user_query"] = user_input
     st.session_state.conversation_state["execution_path"] = []
-    st.session_state.conversation_state["next_action"] = None
-    st.session_state.conversation_state["requires_visualization"] = False
-    st.session_state.conversation_state["analysis_results"] = None
     st.session_state.conversation_state["rendered_charts"] = None
-    st.session_state.conversation_state["final_insights"] = None
-    st.session_state.conversation_state["generated_sql"] = None
-    st.session_state.conversation_state["sql_purpose"] = None
+    st.session_state.conversation_state["visualization_specs"] = None
 
     try:
         final_state = None
@@ -373,7 +387,7 @@ def process_query(user_input):
         status_text = st.empty()
         steps = []
 
-        # Stream through the graph
+        # Stream through graph
         for event in graph.stream(st.session_state.conversation_state):
             for node_name, value in event.items():
                 steps.append(node_name)
@@ -390,20 +404,30 @@ def process_query(user_input):
         if final_state:
             st.session_state.conversation_state.update(final_state)
             final_insights = extract_final_insights(final_state, all_messages)
+            
+            # Get rendered charts
+            rendered_charts = final_state.get('rendered_charts', [])
+            
+            print(f"DEBUG: Final state has {len(rendered_charts)} charts")
+            for chart in rendered_charts:
+                print(f"  - {chart.get('title')} ({chart.get('type')})")
 
             assistant_response = {
                 'type': 'assistant',
                 'content': final_insights,
                 'state': final_state,
-                'visualizations': final_state.get('rendered_charts', []),
+                'visualizations': rendered_charts,  # Key: pass charts here
                 'insights': final_insights,
                 'tool_results': format_tool_results(all_messages)
             }
 
             if final_state.get('needs_clarification'):
-                assistant_response['content'] = final_state.get('clarification_question', 'Could you please provide more details?')
+                assistant_response['content'] = final_state.get(
+                    'clarification_question', 
+                    'Could you please provide more details?'
+                )
 
-            # ✅ Log successful query
+            # Log
             log_entry = {
                 'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 'query': user_input,
@@ -412,7 +436,7 @@ def process_query(user_input):
                 'error_type': None,
                 'execution_path': " → ".join(final_state.get('execution_path', [])),
                 'processing_time': round(time.time() - start_time, 2),
-                'num_visualizations': len(final_state.get('rendered_charts', [])) if final_state.get('rendered_charts') else 0,
+                'num_visualizations': len(rendered_charts),
                 'num_tool_results': len(format_tool_results(all_messages) or []),
                 'needs_clarification': final_state.get('needs_clarification', False)
             }
@@ -425,7 +449,6 @@ def process_query(user_input):
         import traceback
         error_details = traceback.format_exc()
 
-        # ❌ Log error
         log_entry = {
             'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             'query': user_input,
@@ -445,35 +468,6 @@ def process_query(user_input):
             'type': 'error',
             'content': f"Error processing query: {str(e)}\n\nDetails:\n{error_details}"
         }
-
-def display_chat_message(message):
-    if message['type'] == 'user':
-        st.markdown(f"""
-        <div class="chat-message">
-            <div class="message-header">👤 You</div>
-            <div class="message-content">{message['content']}</div>
-        </div>
-        """, unsafe_allow_html=True)
-    
-    elif message['type'] == 'assistant':
-        st.markdown(f"""
-        <div class="chat-message">
-            <div class="message-header">🤖 Assistant</div>
-            <div class="message-content">{message['content']}</div>
-        </div>
-        """, unsafe_allow_html=True)
-        
-        if message.get('tool_results'):
-            display_data_table(message['tool_results'])
-        
-        if message.get('state'):
-            display_analysis_metrics(message['state'])
-        
-        if message.get('visualizations'):
-            display_visualizations(message['state'])
-    
-    elif message['type'] == 'error':
-        st.error(f"⚠️ {message['content']}")
 
 def main():
     initialize_session_state()
