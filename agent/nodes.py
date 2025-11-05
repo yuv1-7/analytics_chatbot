@@ -571,6 +571,9 @@ def analyze_data_structure(df: pd.DataFrame) -> Dict[str, Any]:
     }
     
     for col in df.columns:
+        # Calculate cardinality FIRST before any type conversions
+        structure['cardinality'][col] = df[col].nunique()
+        
         if pd.api.types.is_numeric_dtype(df[col]):
             structure['column_types'][col] = 'numeric'
             structure['numeric_columns'].append(col)
@@ -587,14 +590,14 @@ def analyze_data_structure(df: pd.DataFrame) -> Dict[str, Any]:
                     structure['column_types'][col] = 'temporal'
                     structure['temporal_columns'].append(col)
                     structure['has_temporal'] = True
+                    # Recalculate cardinality after conversion
+                    structure['cardinality'][col] = df[col].nunique()
                     continue
             except:
                 pass
             
             structure['column_types'][col] = 'categorical'
             structure['categorical_columns'].append(col)
-        
-        structure['cardinality'][col] = df[col].nunique()
     
     return structure
 
