@@ -42,6 +42,9 @@ class AgentState(TypedDict):
     
     visualization_specs: Optional[List[Dict[str, Any]]]
     rendered_charts: Optional[List[Dict[str, Any]]]
+    viz_strategy: Optional[str]
+    viz_reasoning: Optional[str]
+    viz_warnings: Optional[List[str]]
     
     final_insights: Optional[str]
     
@@ -56,3 +59,4 @@ class AgentState(TypedDict):
     mentioned_model_ids: Annotated[Optional[List[str]], merge_lists]
     last_query_summary: Optional[str]
     current_topic: Optional[str]
+    clarification_attempts: int
