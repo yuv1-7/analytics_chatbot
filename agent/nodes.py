@@ -256,7 +256,7 @@ Examples:
         "clarification_question": result.clarification_question,
         "requires_visualization": result.requires_visualization,
         "execution_path": execution_path,
-        "mentioned_models": new_mentioned_models if new_mentioned_models else None,
+        "mentioned_models": new_mentioned_models if new_mentioned_models else mentioned_models,
         "current_topic": result.use_case if result.use_case else state.get('current_topic'),
         "last_query_summary": " | ".join(summary_parts) if summary_parts else None,
         "clarification_attempts": clarification_attempts
@@ -334,6 +334,7 @@ def sql_generation_agent(state: AgentState) -> dict:
     
     prompt = f"""
 You are a SQL expert specializing in pharma commercial analytics databases. Your task is to generate a **valid PostgreSQL SELECT query** that accurately answers the user's question.
+Use the {SCHEMA_CONTEXT}, {METRIC_GUIDE}, {context_docs} as necessary to generate the query.
 
 USER QUERY: {state['user_query']}
 
@@ -343,12 +344,6 @@ PARSED INTENT:
 - Comparison Type: {comparison_type}
 - Metrics: {metrics_requested}
 - Time Range: {time_range}
-
-{SCHEMA_CONTEXT}
-
-{METRIC_GUIDE}
-
-{context_docs}
 
 INSTRUCTIONS:
 1. Generate a **valid PostgreSQL SELECT query** only.
@@ -763,7 +758,6 @@ def create_plotly_chart(df: pd.DataFrame, spec: Dict[str, Any]) -> Optional[go.F
             print(f"Color column {color_col} not found, ignoring")
             color_col = None
         
-        # Create chart
         fig = None
         
         if chart_type == 'bar_chart':
@@ -857,7 +851,6 @@ def visualization_specification_agent(state: AgentState) -> dict:
     
     print(f"Column mapping: {column_mapping}")
     
-    # Create spec
     viz_spec = {
         'type': chart_selection['chart_type'],
         'title': f"{state['user_query'][:60]}...",
@@ -868,7 +861,6 @@ def visualization_specification_agent(state: AgentState) -> dict:
         'data': df.to_dict('records')
     }
     
-    # Immediately create chart
     fig = create_plotly_chart(df, viz_spec)
     
     rendered_charts = []
@@ -884,7 +876,7 @@ def visualization_specification_agent(state: AgentState) -> dict:
     
     return {
         "visualization_specs": [viz_spec],
-        "rendered_charts": rendered_charts,  # Pass charts here!
+        "rendered_charts": rendered_charts,
         "execution_path": execution_path,
         "requires_visualization": len(rendered_charts) > 0
     }
@@ -898,7 +890,6 @@ def visualization_rendering_agent(state: AgentState) -> dict:
     execution_path = state.get('execution_path', [])
     execution_path.append('visualization_rendering')
     
-    # Charts already created in spec agent
     rendered_charts = state.get('rendered_charts', [])
     
     print(f"Rendering agent: {len(rendered_charts)} charts already created")
@@ -963,14 +954,14 @@ Structure your response to flow naturally with the visualizations."""
     return {
         "messages": [AIMessage(content=response.content)],
         "final_insights": response.content,
-        "rendered_charts": rendered_charts,  # Preserve charts
+        "rendered_charts": rendered_charts,
         "execution_path": execution_path
     }
 
 def orchestrator_agent(state: AgentState) -> dict:
     needs_clarification = state.get('needs_clarification', False)
     loop_count = state.get('loop_count', 0)
-    clarification_attempts = state.get('clarification_attempts', 0)  # Add this
+    clarification_attempts = state.get('clarification_attempts', 0)
     
     execution_path = state.get('execution_path', [])
     execution_path.append('orchestrator')
@@ -987,7 +978,7 @@ def orchestrator_agent(state: AgentState) -> dict:
         return {
             "next_action": "ask_clarification",
             "execution_path": execution_path,
-            "clarification_attempts": clarification_attempts + 1,  # Add this
+            "clarification_attempts": clarification_attempts + 1,
             "messages": [AIMessage(content=clarification)]
         }
     
