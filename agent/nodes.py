@@ -6,7 +6,7 @@ from langchain_core.messages import HumanMessage, SystemMessage, AIMessage, Tool
 from pydantic import BaseModel, Field
 from typing import Optional, List, Dict, Any
 from agent.state import AgentState
-from agent.tools import ALL_TOOLS
+from agent.tools import ALL_TOOLS, execute_sql_query
 from core.schema_context import SCHEMA_CONTEXT, METRIC_GUIDE
 import plotly.express as px
 import plotly.graph_objects as go
@@ -401,24 +401,13 @@ def data_retrieval_agent(state: AgentState) -> dict:
             "messages": [AIMessage(content="No SQL query was generated")]
         }
     
-    context = f"""Execute the following SQL query that was generated to answer the user's question:
-
-User Query: {state['user_query']}
-Query Purpose: {state.get('sql_purpose', 'Data retrieval')}
-
-Use the execute_sql_query tool to run this query. """
+    response = execute_sql_query.invoke(generated_sql)
+    tool_message=ToolMessage(content=json.dumps(response), tool_call_id=f"sql_exec_{id(generated_sql)}")
     
-    messages = [
-        SystemMessage(content=context),
-        HumanMessage(content=generated_sql)
-    ]
-    
-    response = llm_with_tools.invoke(messages)
-    
-    extracted_models = extract_model_names_from_text(str(response.content))
+    extracted_models = extract_model_names_from_text(str(response.get('content','')))
     
     return {
-        "messages": [response],
+        "messages": [tool_message],
         "execution_path": execution_path,
         "mentioned_models": extracted_models if extracted_models else None
     }
