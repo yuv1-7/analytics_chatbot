@@ -6,7 +6,7 @@ from langchain_core.messages import HumanMessage, SystemMessage, AIMessage, Tool
 from pydantic import BaseModel, Field
 from typing import Optional, List, Dict, Any
 from agent.state import AgentState
-from agent.tools import ALL_TOOLS
+from agent.tools import ALL_TOOLS, execute_sql_query
 from core.schema_context import SCHEMA_CONTEXT, METRIC_GUIDE
 import plotly.express as px
 import plotly.graph_objects as go
@@ -77,12 +77,6 @@ class SQLQuerySpec(BaseModel):
     )
     expected_columns: List[str] = Field(
         description="Expected column names in result"
-    )
-
-
-class VisualizationSpec(BaseModel):
-    visualizations: List[Dict[str, Any]] = Field(
-        description="List of visualization specifications"
     )
 
 
@@ -160,7 +154,7 @@ CONVERSATION CONTEXT (USE THIS TO AVOID ASKING FOR INFO ALREADY GIVEN):
 CRITICAL CLARIFICATION RULES:
 1. Check conversation context FIRST before asking for clarification
 2. Current clarification attempts: {clarification_attempts}
-3. If attempts >= 1, DO NOT ask for clarification. Make reasonable assumptions.
+3. If attempts >= 3, DO NOT ask for clarification. Make reasonable assumptions.
 4. If user mentions "these models", "them", "those" - resolve from mentioned_models list
 5. If user asks "compare performance" without specifying models:
    - If mentioned_models exists: Use those models
@@ -188,7 +182,6 @@ Examples:
     
     context_messages = [SystemMessage(content=system_msg)]
     
-    # Include recent conversation for better context
     if messages:
         context_messages.extend(messages[-6:])
     
@@ -262,6 +255,7 @@ Examples:
         "clarification_attempts": clarification_attempts
     }
 
+
 def context_retrieval_agent(state: AgentState) -> dict:
     execution_path = state.get('execution_path', [])
     execution_path.append('context_retrieval')
@@ -321,7 +315,6 @@ def context_retrieval_agent(state: AgentState) -> dict:
 
 
 def sql_generation_agent(state: AgentState) -> dict:
-    
     execution_path = state.get('execution_path', [])
     execution_path.append('sql_generation')
     
@@ -330,7 +323,7 @@ def sql_generation_agent(state: AgentState) -> dict:
     comparison_type = state.get('comparison_type')
     metrics_requested = state.get('metrics_requested', [])
     time_range = state.get('time_range')
-    context_docs=state.get('context_documents',[])
+    context_docs = state.get('context_documents', [])
     
     prompt = f"""
 You are a SQL expert specializing in pharma commercial analytics databases. Your task is to generate a **valid PostgreSQL SELECT query** that accurately answers the user's question.
@@ -397,7 +390,6 @@ WHERE (m.model_name ILIKE '%random forest%' OR m.algorithm ILIKE '%random forest
 
 
 def data_retrieval_agent(state: AgentState) -> dict:
-    
     execution_path = state.get('execution_path', [])
     execution_path.append('data_retrieval')
     
@@ -409,39 +401,26 @@ def data_retrieval_agent(state: AgentState) -> dict:
             "messages": [AIMessage(content="No SQL query was generated")]
         }
     
-    context = f"""Execute the following SQL query that was generated to answer the user's question:
-
-User Query: {state['user_query']}
-Query Purpose: {state.get('sql_purpose', 'Data retrieval')}
-
-Use the execute_sql_query tool to run this query. """
+    response = execute_sql_query.invoke(generated_sql)
+    tool_message=ToolMessage(content=json.dumps(response), tool_call_id=f"sql_exec_{id(generated_sql)}")
     
-    messages = [
-        SystemMessage(content=context),
-        HumanMessage(content=generated_sql)
-    ]
-    
-    response = llm_with_tools.invoke(messages)
-    
-    extracted_models = extract_model_names_from_text(str(response.content))
+    extracted_models = extract_model_names_from_text(str(response.get('content','')))
     
     return {
-        "messages": [response],
+        "messages": [tool_message],
         "execution_path": execution_path,
         "mentioned_models": extracted_models if extracted_models else None
     }
 
+
 class AnalysisOutput(BaseModel):
-            computed_metrics: Dict[str, Any] = Field(description="Key calculated metrics")
-            patterns: List[str] = Field(description="Identified patterns and trends")
-            anomalies: List[str] = Field(description="Unusual observations or outliers")
-            statistical_summary: Dict[str, Any] = Field(description="Statistical summaries")
+    computed_metrics: Dict[str, Any] = Field(description="Key calculated metrics")
+    patterns: List[str] = Field(description="Identified patterns and trends")
+    anomalies: List[str] = Field(description="Unusual observations or outliers")
+    statistical_summary: Dict[str, Any] = Field(description="Statistical summaries")
+
 
 def analysis_computation_agent(state: AgentState) -> dict:
-    """
-    Performs intelligent analysis on retrieved data using LLM.
-    Computes metrics, identifies patterns, and detects anomalies.
-    """
     execution_path = state.get('execution_path', [])
     execution_path.append('analysis_computation')
     
@@ -457,7 +436,6 @@ def analysis_computation_agent(state: AgentState) -> dict:
             except:
                 continue
     
-    # If no data retrieved, return empty analysis
     if not tool_results or not any(r.get('success') for r in tool_results):
         return {
             "analysis_results": {
@@ -481,7 +459,7 @@ Comparison Type: {state.get('comparison_type', 'general')}
 Use Case: {state.get('use_case', 'unknown')}
 
 Retrieved Data:
-{json.dumps(successful_data[:50], indent=2, default=str)}  # Limit to 50 rows to avoid token limits
+{json.dumps(successful_data[:50], indent=2, default=str)}
 
 Provide analysis in the following structure:
 1. **Key Metrics**: Calculate or extract important quantitative metrics
@@ -510,7 +488,6 @@ Focus on actionable insights relevant to pharma commercial analytics."""
     except Exception as e:
         print(f"LLM analysis failed, falling back to basic analysis: {e}")
         
-        # Fallback: Basic pandas-style analysis
         analysis_results = {
             'raw_data': tool_results,
             'computed_metrics': _compute_basic_metrics(successful_data),
@@ -528,10 +505,6 @@ Focus on actionable insights relevant to pharma commercial analytics."""
 
 
 def _compute_basic_metrics(data: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """
-    Fallback basic metric computation when LLM fails.
-    Extracts common pharma metrics from data.
-    """
     if not data:
         return {}
     
@@ -557,259 +530,79 @@ def _compute_basic_metrics(data: List[Dict[str, Any]]) -> Dict[str, Any]:
     
     return metrics
 
-def analyze_data_structure(df: pd.DataFrame) -> Dict[str, Any]:
-    """Analyze DataFrame structure for visualization decisions"""
-    structure = {
-        'row_count': len(df),
-        'columns': list(df.columns),
-        'column_types': {},
-        'cardinality': {},
-        'has_temporal': False,
-        'temporal_columns': [],
-        'numeric_columns': [],
-        'categorical_columns': []
-    }
-    
-    for col in df.columns:
-        # Calculate cardinality FIRST before any type conversions
-        structure['cardinality'][col] = df[col].nunique()
-        
-        if pd.api.types.is_numeric_dtype(df[col]):
-            structure['column_types'][col] = 'numeric'
-            structure['numeric_columns'].append(col)
-        elif pd.api.types.is_datetime64_any_dtype(df[col]):
-            structure['column_types'][col] = 'temporal'
-            structure['temporal_columns'].append(col)
-            structure['has_temporal'] = True
-        else:
-            # Try to parse as datetime
-            try:
-                parsed = pd.to_datetime(df[col], errors='coerce')
-                if parsed.notna().sum() > 0.8 * len(df):
-                    df[col] = parsed  # Convert in place
-                    structure['column_types'][col] = 'temporal'
-                    structure['temporal_columns'].append(col)
-                    structure['has_temporal'] = True
-                    # Recalculate cardinality after conversion
-                    structure['cardinality'][col] = df[col].nunique()
-                    continue
-            except:
-                pass
-            
-            structure['column_types'][col] = 'categorical'
-            structure['categorical_columns'].append(col)
-    
-    return structure
+
+# ============================================================================
+# NEW VISUALIZATION PIPELINE
+# ============================================================================
+
+class ChartSpec(BaseModel):
+    chart_type: str = Field(description="bar, line, scatter, box, histogram")
+    title: str
+    x_axis: str
+    y_axis: str
+    color: Optional[str] = None
+    facet: Optional[str] = None
+    orientation: Optional[str] = Field(default="v", description="v or h")
+    barmode: Optional[str] = Field(default=None, description="group, stack, or null")
+    sort_by: Optional[str] = None
+    sort_ascending: bool = True
+    filter: Optional[Dict[str, Any]] = None
+    explanation: str
 
 
-def select_chart_type(structure: Dict[str, Any], query_context: str) -> Dict[str, Any]:
-    """Rule-based chart type selection"""
-    row_count = structure['row_count']
-    temporal_cols = structure['temporal_columns']
-    numeric_cols = structure['numeric_columns']
-    categorical_cols = structure['categorical_columns']
-    cardinality = structure['cardinality']
-    
-    # Too many rows
-    if row_count > 100:
-        high_card_cats = [col for col in categorical_cols if cardinality.get(col, 0) > 50]
-        if high_card_cats:
-            return {
-                'chart_type': None,
-                'warning': f'Too many unique values in {high_card_cats[0]} ({cardinality[high_card_cats[0]]} values)',
-                'suggestion': 'Consider filtering or aggregating data'
-            }
-    
-    # Time series
-    if temporal_cols and numeric_cols:
-        return {
-            'chart_type': 'line_chart',
-            'primary_role': 'temporal',
-            'suitable_for': 'trends over time'
-        }
-    
-    # Categorical comparison
-    low_card_cats = [col for col in categorical_cols if cardinality.get(col, 0) <= 20]
-    if low_card_cats and numeric_cols:
-        return {
-            'chart_type': 'bar_chart',
-            'primary_role': 'comparison',
-            'suitable_for': 'comparing categories'
-        }
-    
-    # Ranking/importance
-    if 'rank' in [c.lower() for c in structure['columns']] or \
-       any('importance' in c.lower() for c in structure['columns']):
-        return {
-            'chart_type': 'bar_chart',
-            'primary_role': 'ranking',
-            'suitable_for': 'showing rankings'
-        }
-    
-    # Scatter for correlations
-    if len(numeric_cols) >= 2:
-        return {
-            'chart_type': 'scatter_plot',
-            'primary_role': 'correlation',
-            'suitable_for': 'relationships between variables'
-        }
-    
-    # Summary metrics
-    if len(numeric_cols) == 1 and row_count <= 5:
-        return {
-            'chart_type': 'metric_card',
-            'primary_role': 'summary',
-            'suitable_for': 'key metrics'
-        }
-    
-    # Default
-    if categorical_cols and numeric_cols:
-        return {
-            'chart_type': 'bar_chart',
-            'primary_role': 'general',
-            'suitable_for': 'general comparison'
-        }
-    
-    return {
-        'chart_type': None,
-        'warning': 'No suitable visualization pattern detected',
-        'suggestion': 'Data may be better viewed as a table'
-    }
+class VizSpecOutput(BaseModel):
+    strategy: str = Field(description="single_chart, multiple_charts, or no_visualization")
+    reason: str
+    charts: List[ChartSpec]
+    warnings: List[str] = Field(default_factory=list)
 
 
-class VizColumnMapping(BaseModel):
-    x: str = Field(description="Column name for x-axis")
-    y: str = Field(description="Column name for y-axis")
-    color: Optional[str] = Field(default=None, description="Column name for color grouping")
-    facet: Optional[str] = Field(default=None, description="Column name for faceting")
+VIZ_RULES = """
+CRITICAL VISUALIZATION RULES:
 
+1. NEVER stack metrics with different scales (RMSE, R2, MAE, AUC, etc.)
+   - These metrics have different units and interpretations
+   - Stacking them creates nonsensical visualizations
 
-def map_columns_to_chart(
-    structure: Dict[str, Any],
-    chart_selection: Dict[str, Any],
-    query_context: str
-) -> Optional[Dict[str, Any]]:
-    """Use LLM to map columns to chart roles"""
-    chart_type = chart_selection.get('chart_type')
-    if not chart_type or chart_type == 'metric_card':
-        return None
-    
-    available_columns = structure['columns']
-    column_types = structure['column_types']
-    
-    column_info = []
-    for col in available_columns:
-        col_type = column_types[col]
-        cardinality = structure['cardinality'][col]
-        column_info.append(f"- {col} ({col_type}, {cardinality} unique values)")
-    
-    prompt = f"""Map semantic roles to EXACT column names for a {chart_type}.
+2. For model performance comparison with multiple metrics:
+   - PREFERRED: Create separate chart for each metric
+   - Each chart compares all models on ONE metric
+   - Use barmode='group' if combining in one chart (rarely recommended)
 
-AVAILABLE COLUMNS:
-{chr(10).join(column_info)}
+3. For single metric comparison:
+   - Simple bar chart: models on x-axis, metric on y-axis
+   - Sort by metric value for clarity
 
-USER QUERY CONTEXT: {query_context}
+4. For time series:
+   - Use line charts
+   - Color by entity (model, HCP, region)
 
-RULES:
-1. Use ONLY column names from the available columns list above
-2. For {chart_type}:
-   - x: {'temporal column' if chart_type == 'line_chart' else 'categorical column for grouping'}
-   - y: numeric column to visualize
-   - color: optional categorical column for grouping (only if relevant)
-   - facet: optional categorical column for subplots (only if relevant)
-3. Choose columns that best answer the user's query
-4. Leave color/facet as null if not needed
+5. For rankings/importance:
+   - Horizontal bars sorted by value
+   - Most important at top
 
-Output valid JSON mapping only."""
-    
-    try:
-        structured_llm = llm.with_structured_output(VizColumnMapping)
-        mapping = structured_llm.invoke(prompt)
-        
-        # Validate columns exist
-        for field in ['x', 'y', 'color', 'facet']:
-            value = getattr(mapping, field)
-            if value and value not in available_columns:
-                print(f"Warning: {field}='{value}' not in columns {available_columns}")
-                return None
-        
-        return {
-            'x': mapping.x,
-            'y': mapping.y,
-            'color': mapping.color,
-            'facet': mapping.facet
-        }
-    
-    except Exception as e:
-        print(f"Column mapping failed: {e}")
-        return None
+6. For distributions:
+   - Histograms for continuous
+   - Box plots for comparison across groups
 
+7. Data size limits:
+   - >100 points: Suggest filtering or aggregation
+   - High cardinality (>20 unique values): Aggregate or limit
 
-def create_plotly_chart(df: pd.DataFrame, spec: Dict[str, Any]) -> Optional[go.Figure]:
-    """Create Plotly chart from specification"""
-    try:
-        chart_type = spec['type']
-        x_col = spec['x']
-        y_col = spec['y']
-        color_col = spec.get('color')
-        title = spec.get('title', 'Chart')
-        
-        # Validate columns exist
-        if x_col not in df.columns or y_col not in df.columns:
-            print(f"Missing columns: x={x_col}, y={y_col} in {df.columns.tolist()}")
-            return None
-        
-        if color_col and color_col not in df.columns:
-            print(f"Color column {color_col} not found, ignoring")
-            color_col = None
-        
-        # Create chart
-        fig = None
-        
-        if chart_type == 'bar_chart':
-            if color_col:
-                fig = px.bar(df, x=x_col, y=y_col, color=color_col, title=title)
-            else:
-                fig = px.bar(df, x=x_col, y=y_col, title=title)
-        
-        elif chart_type == 'line_chart':
-            if color_col:
-                fig = px.line(df, x=x_col, y=y_col, color=color_col, title=title, markers=True)
-            else:
-                fig = px.line(df, x=x_col, y=y_col, title=title, markers=True)
-        
-        elif chart_type == 'scatter_plot':
-            if color_col:
-                fig = px.scatter(df, x=x_col, y=y_col, color=color_col, title=title)
-            else:
-                fig = px.scatter(df, x=x_col, y=y_col, title=title)
-        
-        if fig:
-            fig.update_layout(
-                template="plotly_white",
-                height=400,
-                margin=dict(l=20, r=20, t=40, b=20),
-                font=dict(size=12)
-            )
-        
-        return fig
-    
-    except Exception as e:
-        print(f"Chart creation failed: {e}")
-        import traceback
-        traceback.print_exc()
-        return None
+8. Always be explicit:
+   - Specify barmode for bar charts
+   - Specify orientation for clarity
+   - Provide clear titles and explanations
+"""
 
 
 def visualization_specification_agent(state: AgentState) -> dict:
-    """Generate viz specs from actual data"""
     execution_path = state.get('execution_path', [])
     execution_path.append('visualization_spec')
     
     analysis_results = state.get('analysis_results', {})
     raw_data = analysis_results.get('raw_data', [])
     
-    # Extract data from tool results
     df = None
     for result in raw_data:
         if result.get('success') and result.get('data'):
@@ -824,84 +617,265 @@ def visualization_specification_agent(state: AgentState) -> dict:
             "rendered_charts": []
         }
     
-    # Limit rows
     if len(df) > 100:
         print(f"Limiting data from {len(df)} to 100 rows")
         df = df.head(100)
     
-    print(f"Analyzing data structure: {df.shape}")
-    structure = analyze_data_structure(df)
-    print(f"Columns: {structure['columns']}")
-    print(f"Types: {structure['column_types']}")
+    user_query = state['user_query']
     
-    chart_selection = select_chart_type(structure, state['user_query'])
-    print(f"Selected chart type: {chart_selection.get('chart_type')}")
+    data_summary = {
+        'shape': {'rows': len(df), 'columns': len(df.columns)},
+        'columns': list(df.columns),
+        'dtypes': {col: str(dtype) for col, dtype in df.dtypes.items()},
+        'cardinality': {col: int(df[col].nunique()) for col in df.columns},
+        'sample_data': df.head(5).to_dict('records')
+    }
     
-    if not chart_selection.get('chart_type'):
-        print(f"No chart selected: {chart_selection.get('warning')}")
+    prompt = f"""You are a visualization expert for pharma analytics.
+
+USER QUERY: {user_query}
+
+DATA STRUCTURE:
+{json.dumps(data_summary, indent=2, default=str)}
+
+{VIZ_RULES}
+
+EXAMPLES:
+
+Example 1 - Multi-metric model comparison:
+Input: columns=['model_name', 'metric_name', 'metric_value']
+       metric_name has values: ['rmse', 'mae', 'r2', 'mape']
+Output:
+{{
+  "strategy": "multiple_charts",
+  "reason": "Multiple metrics with different scales require separate charts for clarity",
+  "charts": [
+    {{
+      "chart_type": "bar",
+      "title": "RMSE Comparison Across Models",
+      "x_axis": "model_name",
+      "y_axis": "metric_value",
+      "filter": {{"metric_name": "rmse"}},
+      "barmode": null,
+      "explanation": "Lower RMSE indicates better model accuracy"
+    }},
+    {{
+      "chart_type": "bar",
+      "title": "R² Score Comparison Across Models",
+      "x_axis": "model_name",
+      "y_axis": "metric_value",
+      "filter": {{"metric_name": "r2"}},
+      "barmode": null,
+      "explanation": "Higher R² indicates better model fit"
+    }}
+  ]
+}}
+
+Example 2 - Single metric comparison:
+Input: columns=['model_name', 'rmse']
+Output:
+{{
+  "strategy": "single_chart",
+  "reason": "Single metric allows direct comparison in one chart",
+  "charts": [
+    {{
+      "chart_type": "bar",
+      "title": "Model Performance - RMSE",
+      "x_axis": "model_name",
+      "y_axis": "rmse",
+      "sort_by": "rmse",
+      "sort_ascending": true,
+      "explanation": "Models sorted by RMSE (lower is better)"
+    }}
+  ]
+}}
+
+Example 3 - Time series:
+Input: columns=['date', 'model_name', 'metric_value']
+Output:
+{{
+  "strategy": "single_chart",
+  "reason": "Temporal data shows trends over time",
+  "charts": [
+    {{
+      "chart_type": "line",
+      "title": "Model Performance Over Time",
+      "x_axis": "date",
+      "y_axis": "metric_value",
+      "color": "model_name",
+      "explanation": "Performance trends by model"
+    }}
+  ]
+}}
+
+Now analyze the actual data and generate visualization specifications.
+Return valid JSON only.
+"""
+    
+    try:
+        structured_llm = llm.with_structured_output(VizSpecOutput)
+        viz_spec = structured_llm.invoke(prompt)
+        
+        validation_issues = validate_viz_spec(viz_spec, df)
+        
+        if validation_issues:
+            print(f"Validation issues: {validation_issues}")
+            viz_spec.warnings.extend(validation_issues)
+        
+        rendered_charts = []
+        for chart_spec in viz_spec.charts:
+            try:
+                fig = render_chart(df, chart_spec)
+                if fig:
+                    rendered_charts.append({
+                        'title': chart_spec.title,
+                        'figure': fig,
+                        'type': chart_spec.chart_type,
+                        'explanation': chart_spec.explanation
+                    })
+            except Exception as e:
+                print(f"Chart rendering failed: {e}")
+                viz_spec.warnings.append(f"Failed to render {chart_spec.title}: {str(e)}")
+        
         return {
+            "visualization_specs": [spec.dict() for spec in viz_spec.charts],
+            "rendered_charts": rendered_charts,
+            "viz_strategy": viz_spec.strategy,
+            "viz_reasoning": viz_spec.reason,
+            "viz_warnings": viz_spec.warnings,
             "execution_path": execution_path,
-            "visualization_specs": [],
-            "rendered_charts": []
+            "requires_visualization": len(rendered_charts) > 0
         }
     
-    # Map columns
-    column_mapping = map_columns_to_chart(structure, chart_selection, state['user_query'])
+    except Exception as e:
+        print(f"Visualization spec generation failed: {e}")
+        import traceback
+        traceback.print_exc()
+        
+        return {
+            "visualization_specs": [],
+            "rendered_charts": [],
+            "viz_warnings": [f"Visualization generation failed: {str(e)}"],
+            "execution_path": execution_path
+        }
+
+
+def validate_viz_spec(spec: VizSpecOutput, df: pd.DataFrame) -> List[str]:
+    issues = []
     
-    if not column_mapping:
-        # Fallback mapping
-        print("Using fallback column mapping")
-        x_col = (structure['temporal_columns'] or structure['categorical_columns'] or structure['columns'])[0]
-        y_col = structure['numeric_columns'][0] if structure['numeric_columns'] else structure['columns'][1]
-        column_mapping = {'x': x_col, 'y': y_col, 'color': None, 'facet': None}
+    for chart in spec.charts:
+        required_cols = [chart.x_axis, chart.y_axis]
+        if chart.color:
+            required_cols.append(chart.color)
+        if chart.facet:
+            required_cols.append(chart.facet)
+        
+        for col in required_cols:
+            if col not in df.columns:
+                issues.append(f"Column '{col}' not found in data")
+        
+        if chart.barmode == 'stack' and is_metrics_comparison(df, chart):
+            issues.append(f"BLOCKED: Cannot stack metrics in '{chart.title}' - switching to grouped")
+            chart.barmode = 'group'
+        
+        if chart.filter:
+            filter_col = list(chart.filter.keys())[0]
+            if filter_col not in df.columns:
+                issues.append(f"Filter column '{filter_col}' not found")
     
-    print(f"Column mapping: {column_mapping}")
+    return issues
+
+
+def is_metrics_comparison(df: pd.DataFrame, chart: ChartSpec) -> bool:
+    metric_indicators = ['metric', 'rmse', 'mae', 'r2', 'auc', 'accuracy', 
+                        'precision', 'recall', 'f1', 'mape', 'mse']
     
-    # Create spec
-    viz_spec = {
-        'type': chart_selection['chart_type'],
-        'title': f"{state['user_query'][:60]}...",
-        'x': column_mapping['x'],
-        'y': column_mapping['y'],
-        'color': column_mapping.get('color'),
-        'facet': column_mapping.get('facet'),
-        'data': df.to_dict('records')
-    }
+    if chart.color:
+        color_values = df[chart.color].unique() if chart.color in df.columns else []
+        for val in color_values:
+            if any(indicator in str(val).lower() for indicator in metric_indicators):
+                return True
     
-    # Immediately create chart
-    fig = create_plotly_chart(df, viz_spec)
+    y_col_name = chart.y_axis.lower()
+    if any(indicator in y_col_name for indicator in metric_indicators):
+        return True
     
-    rendered_charts = []
-    if fig:
-        rendered_charts.append({
-            'title': viz_spec['title'],
-            'figure': fig,
-            'type': chart_selection['chart_type']
-        })
-        print(f"✓ Chart created successfully: {chart_selection['chart_type']}")
-    else:
-        print("✗ Chart creation failed")
+    return False
+
+
+def render_chart(df: pd.DataFrame, spec: ChartSpec) -> Optional[go.Figure]:
+    try:
+        plot_df = df.copy()
+        
+        if spec.filter:
+            for col, val in spec.filter.items():
+                plot_df = plot_df[plot_df[col] == val]
+        
+        if len(plot_df) == 0:
+            print(f"No data after filtering for {spec.title}")
+            return None
+        
+        if spec.sort_by and spec.sort_by in plot_df.columns:
+            plot_df = plot_df.sort_values(spec.sort_by, ascending=spec.sort_ascending)
+        
+        kwargs = {
+            'data_frame': plot_df,
+            'x': spec.x_axis,
+            'y': spec.y_axis,
+            'title': spec.title
+        }
+        
+        if spec.color and spec.color in plot_df.columns:
+            kwargs['color'] = spec.color
+        
+        if spec.facet and spec.facet in plot_df.columns:
+            kwargs['facet_col'] = spec.facet
+        
+        if spec.chart_type == 'bar':
+            if spec.orientation:
+                kwargs['orientation'] = spec.orientation
+            fig = px.bar(**kwargs)
+            if spec.barmode:
+                fig.update_layout(barmode=spec.barmode)
+        
+        elif spec.chart_type == 'line':
+            kwargs['markers'] = True
+            fig = px.line(**kwargs)
+        
+        elif spec.chart_type == 'scatter':
+            fig = px.scatter(**kwargs)
+        
+        elif spec.chart_type == 'box':
+            fig = px.box(**kwargs)
+        
+        elif spec.chart_type == 'histogram':
+            fig = px.histogram(**kwargs)
+        
+        else:
+            print(f"Unsupported chart type: {spec.chart_type}")
+            return None
+        
+        fig.update_layout(
+            template="plotly_white",
+            height=400,
+            margin=dict(l=40, r=40, t=60, b=40),
+            font=dict(size=12)
+        )
+        
+        return fig
     
-    return {
-        "visualization_specs": [viz_spec],
-        "rendered_charts": rendered_charts,  # Pass charts here!
-        "execution_path": execution_path,
-        "requires_visualization": len(rendered_charts) > 0
-    }
+    except Exception as e:
+        print(f"Error rendering chart '{spec.title}': {e}")
+        import traceback
+        traceback.print_exc()
+        return None
 
 
 def visualization_rendering_agent(state: AgentState) -> dict:
-    """
-    This agent is now mostly a pass-through since we render in spec agent.
-    Kept for backwards compatibility.
-    """
     execution_path = state.get('execution_path', [])
     execution_path.append('visualization_rendering')
     
-    # Charts already created in spec agent
     rendered_charts = state.get('rendered_charts', [])
-    
-    print(f"Rendering agent: {len(rendered_charts)} charts already created")
     
     return {
         "rendered_charts": rendered_charts,
@@ -910,7 +884,6 @@ def visualization_rendering_agent(state: AgentState) -> dict:
 
 
 def insight_generation_agent(state: AgentState) -> dict:
-    """Generate insights WITH inline chart references"""
     execution_path = state.get('execution_path', [])
     execution_path.append('insight_generation')
     
@@ -918,22 +891,32 @@ def insight_generation_agent(state: AgentState) -> dict:
     context_docs = state.get('context_documents', [])
     comparison_type = state.get('comparison_type')
     rendered_charts = state.get('rendered_charts', [])
+    viz_strategy = state.get('viz_strategy')
+    viz_reasoning = state.get('viz_reasoning')
+    viz_warnings = state.get('viz_warnings', [])
     
-    # Build chart context
     viz_context = ""
     if rendered_charts:
         viz_descriptions = []
         for i, chart in enumerate(rendered_charts, 1):
-            chart_type = chart['type'].replace('_', ' ').title()
-            viz_descriptions.append(f"**Chart {i}**: {chart_type} - {chart['title']}")
+            viz_descriptions.append(
+                f"**Chart {i}: {chart['title']}**\n"
+                f"Type: {chart['type']}\n"
+                f"Shows: {chart.get('explanation', 'Data visualization')}"
+            )
         
         viz_context = f"""
 
-📊 **Visualizations Generated:**
+📊 **Visualizations Generated ({viz_strategy}):**
+{viz_reasoning}
+
 {chr(10).join(viz_descriptions)}
 
-The charts are displayed above/below this text. Reference them naturally in your explanation.
+Reference these charts naturally in your explanation (e.g., "As shown in Chart 1...", "The visualization illustrates...").
 """
+    
+    if viz_warnings:
+        viz_context += f"\n\n⚠️ **Visualization Notes:**\n" + "\n".join(f"- {w}" for w in viz_warnings)
     
     prompt = f"""Generate a clear, business-focused explanation of the analysis results.
 
@@ -944,36 +927,41 @@ Analysis Results:
 {json.dumps(analysis_results, indent=2, default=str)}
 
 Context:
-{json.dumps(context_docs, indent=2)}
+{json.dumps(context_docs[:3], indent=2, default=str)}
 {viz_context}
 
 **Instructions:**
 1. Direct answer to the user's question
-2. Key quantitative findings (numbers, percentages)
-3. **Reference the charts naturally** (e.g., "As shown in Chart 1 above...", "The bar chart illustrates...")
-4. Contextual reasoning (WHY these results occurred)
-5. Business implications
-6. Recommendations (if applicable)
+2. Key quantitative findings (cite specific numbers)
+3. Reference the charts naturally (e.g., "Chart 1 shows that...", "As visualized above...")
+4. Explain WHY these results occurred (contextual reasoning)
+5. Business implications for pharma commercial analytics
+6. Actionable recommendations if applicable
 
-Keep language simple and avoid technical jargon. Focus on actionable insights.
-Structure your response to flow naturally with the visualizations."""
+Keep language clear and avoid jargon. Structure your response to flow with the visualizations.
+"""
     
     response = llm.invoke(prompt)
     
     return {
         "messages": [AIMessage(content=response.content)],
         "final_insights": response.content,
-        "rendered_charts": rendered_charts,  # Preserve charts
+        "rendered_charts": rendered_charts,
         "execution_path": execution_path
     }
+
 
 def orchestrator_agent(state: AgentState) -> dict:
     needs_clarification = state.get('needs_clarification', False)
     loop_count = state.get('loop_count', 0)
-    clarification_attempts = state.get('clarification_attempts', 0)  # Add this
+    clarification_attempts = state.get('clarification_attempts', 0)
     
     execution_path = state.get('execution_path', [])
     execution_path.append('orchestrator')
+
+    if clarification_attempts >= 3:
+        print(f"DEBUG: Max clarification attempts reached ({clarification_attempts}), proceeding anyway")
+        needs_clarification = False
     
     if loop_count > 16:
         return {
@@ -987,7 +975,7 @@ def orchestrator_agent(state: AgentState) -> dict:
         return {
             "next_action": "ask_clarification",
             "execution_path": execution_path,
-            "clarification_attempts": clarification_attempts + 1,  # Add this
+            "clarification_attempts": clarification_attempts + 1,
             "messages": [AIMessage(content=clarification)]
         }
     

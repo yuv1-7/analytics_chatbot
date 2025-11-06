@@ -156,6 +156,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+
 def initialize_session_state():
     if 'chat_history' not in st.session_state:
         st.session_state.chat_history = []
@@ -191,7 +192,10 @@ def initialize_session_state():
             "mentioned_models": [],
             "mentioned_model_ids": [],
             "last_query_summary": None,
-            "current_topic": None
+            "current_topic": None,
+            "viz_strategy": None,
+            "viz_reasoning": None,
+            "viz_warnings": None
         }
     
     if 'db_initialized' not in st.session_state:
@@ -202,8 +206,8 @@ def initialize_session_state():
             st.session_state.db_initialized = False
             st.session_state.db_error = str(e)
 
+
 def initialize_log_dataframe():
-    """Initialize an empty DataFrame for logging queries, responses, and errors."""
     if 'query_log' not in st.session_state:
         st.session_state.query_log = pd.DataFrame(columns=[
             'timestamp',
@@ -244,8 +248,8 @@ def format_tool_results(messages):
     
     return results_data if results_data else None
 
+
 def display_chat_message(message):
-    """Display chat message with inline charts"""
     if message['type'] == 'user':
         st.markdown(f"""
         <div class="chat-message">
@@ -255,7 +259,6 @@ def display_chat_message(message):
         """, unsafe_allow_html=True)
     
     elif message['type'] == 'assistant':
-        # Display insights text
         st.markdown(f"""
         <div class="chat-message">
             <div class="message-header">🤖 Assistant</div>
@@ -263,12 +266,15 @@ def display_chat_message(message):
         </div>
         """, unsafe_allow_html=True)
         
-        # Display visualizations IMMEDIATELY after text
         if message.get('visualizations'):
             st.markdown("---")
             for i, chart_data in enumerate(message['visualizations'], 1):
                 title = chart_data.get('title', f'Chart {i}')
+                explanation = chart_data.get('explanation', '')
                 figure = chart_data.get('figure')
+                
+                if explanation:
+                    st.markdown(f"**{explanation}**")
                 
                 if figure:
                     st.plotly_chart(figure, use_container_width=True, key=f"chart_{id(message)}_{i}")
@@ -276,21 +282,24 @@ def display_chat_message(message):
                     st.warning(f"⚠️ Chart {i}: {title} - No figure data available")
             st.markdown("---")
         
-        # Optional: Show data tables in expander (not charts)
+        if message.get('viz_warnings'):
+            with st.expander("⚠️ Visualization Notes", expanded=False):
+                for warning in message['viz_warnings']:
+                    st.warning(warning)
+        
         if message.get('tool_results'):
             with st.expander("📄 Retrieved Data", expanded=False):
                 display_data_table(message['tool_results'])
         
-        # Optional: Show metrics in expander
         if message.get('state') and message['state'].get('analysis_results'):
-            display_analysis_metrics(message['state'])
+            with st.expander("📊 Analysis Metrics", expanded=False):
+                display_analysis_metrics(message['state'])
     
     elif message['type'] == 'error':
         st.error(f"⚠️ {message['content']}")
 
 
 def display_data_table(results_data):
-    """Display data tables in expander"""
     if not results_data:
         return
     
@@ -303,13 +312,11 @@ def display_data_table(results_data):
         col3.metric("Showing", f"{min(5, result['total_rows'])}/{result['total_rows']}")
         
         if result['data']:
-            import pandas as pd
             df = pd.DataFrame(result['data'])
             st.dataframe(df, use_container_width=True)
 
 
 def display_analysis_metrics(state):
-    """Display computed metrics in expander"""
     analysis_results = state.get('analysis_results')
     
     if not analysis_results:
@@ -318,26 +325,23 @@ def display_analysis_metrics(state):
     computed_metrics = analysis_results.get('computed_metrics', {})
     
     if computed_metrics:
-        with st.expander("📈 Computed Metrics", expanded=False):
-            for metric_name, values in computed_metrics.items():
-                st.write(f"**{metric_name}**")
-                if isinstance(values, dict):
-                    cols = st.columns(len(values))
-                    for idx, (key, val) in enumerate(values.items()):
-                        if isinstance(val, float):
-                            cols[idx].metric(key, f"{val:.4f}")
-                        else:
-                            cols[idx].metric(key, str(val))
-                else:
-                    st.write(values)
+        for metric_name, values in computed_metrics.items():
+            st.write(f"**{metric_name}**")
+            if isinstance(values, dict):
+                cols = st.columns(len(values))
+                for idx, (key, val) in enumerate(values.items()):
+                    if isinstance(val, float):
+                        cols[idx].metric(key, f"{val:.4f}")
+                    else:
+                        cols[idx].metric(key, str(val))
+            else:
+                st.write(values)
 
 
 def extract_final_insights(final_state, all_messages):
-    """Extract insights with fallback logic"""
     if final_state.get('final_insights'):
         return final_state['final_insights']
     
-    # Check AI messages for insights
     ai_messages = [msg for msg in all_messages if isinstance(msg, AIMessage)]
     if ai_messages:
         last_ai_msg = ai_messages[-1]
@@ -346,7 +350,6 @@ def extract_final_insights(final_state, all_messages):
                     "execute_sql_query" in str(last_ai_msg.content)):
                 return last_ai_msg.content
     
-    # Fallback to analysis summary
     analysis_results = final_state.get('analysis_results')
     if analysis_results:
         summary_parts = []
@@ -371,14 +374,15 @@ def extract_final_insights(final_state, all_messages):
 
 
 def process_query(user_input):
-    """Process query with improved chart handling"""
     start_time = time.time()
     
-    # Reset state
     st.session_state.conversation_state["user_query"] = user_input
     st.session_state.conversation_state["execution_path"] = []
     st.session_state.conversation_state["rendered_charts"] = None
     st.session_state.conversation_state["visualization_specs"] = None
+    st.session_state.conversation_state["viz_strategy"] = None
+    st.session_state.conversation_state["viz_reasoning"] = None
+    st.session_state.conversation_state["viz_warnings"] = None
 
     try:
         final_state = None
@@ -387,7 +391,6 @@ def process_query(user_input):
         status_text = st.empty()
         steps = []
 
-        # Stream through graph
         for event in graph.stream(st.session_state.conversation_state):
             for node_name, value in event.items():
                 steps.append(node_name)
@@ -405,10 +408,13 @@ def process_query(user_input):
             st.session_state.conversation_state.update(final_state)
             final_insights = extract_final_insights(final_state, all_messages)
             
-            # Get rendered charts with safe fallback
             rendered_charts = final_state.get('rendered_charts')
             if rendered_charts is None:
                 rendered_charts = []
+            
+            viz_strategy = final_state.get('viz_strategy')
+            viz_reasoning = final_state.get('viz_reasoning')
+            viz_warnings = final_state.get('viz_warnings', [])
             
             print(f"DEBUG: Final state has {len(rendered_charts)} charts")
             for chart in rendered_charts:
@@ -418,9 +424,12 @@ def process_query(user_input):
                 'type': 'assistant',
                 'content': final_insights,
                 'state': final_state,
-                'visualizations': rendered_charts,  # Safe: always a list
+                'visualizations': rendered_charts,
                 'insights': final_insights,
-                'tool_results': format_tool_results(all_messages)
+                'tool_results': format_tool_results(all_messages),
+                'viz_strategy': viz_strategy,
+                'viz_reasoning': viz_reasoning,
+                'viz_warnings': viz_warnings
             }
 
             if final_state.get('needs_clarification'):
@@ -429,7 +438,6 @@ def process_query(user_input):
                     'Could you please provide more details?'
                 )
 
-            # Log
             log_entry = {
                 'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 'query': user_input,
@@ -471,11 +479,11 @@ def process_query(user_input):
             'content': f"Error processing query: {str(e)}\n\nDetails:\n{error_details}"
         }
 
+
 def main():
     initialize_session_state()
     initialize_log_dataframe()
 
-    
     st.markdown("""
     <div class="app-header">
         <div class="app-title">🏥 Pharma Analytics Assistant</div>
@@ -551,7 +559,8 @@ def main():
                     "final_insights": None, "needs_clarification": False, "clarification_question": None,
                     "loop_count": 0, "next_action": None, "execution_path": [],
                     "conversation_context": {}, "mentioned_models": [], "mentioned_model_ids": [],
-                    "last_query_summary": None, "current_topic": None
+                    "last_query_summary": None, "current_topic": None, "viz_strategy": None,
+                    "viz_reasoning": None, "viz_warnings": None
                 }
                 st.rerun()
 
