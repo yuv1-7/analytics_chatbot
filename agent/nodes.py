@@ -154,7 +154,7 @@ CONVERSATION CONTEXT (USE THIS TO AVOID ASKING FOR INFO ALREADY GIVEN):
 CRITICAL CLARIFICATION RULES:
 1. Check conversation context FIRST before asking for clarification
 2. Current clarification attempts: {clarification_attempts}
-3. If attempts >= 1, DO NOT ask for clarification. Make reasonable assumptions.
+3. If attempts >= 3, DO NOT ask for clarification. Make reasonable assumptions.
 4. If user mentions "these models", "them", "those" - resolve from mentioned_models list
 5. If user asks "compare performance" without specifying models:
    - If mentioned_models exists: Use those models
@@ -969,6 +969,10 @@ def orchestrator_agent(state: AgentState) -> dict:
     
     execution_path = state.get('execution_path', [])
     execution_path.append('orchestrator')
+
+    if clarification_attempts >= 3:
+        print(f"DEBUG: Max clarification attempts reached ({clarification_attempts}), proceeding anyway")
+        needs_clarification = False
     
     if loop_count > 16:
         return {
