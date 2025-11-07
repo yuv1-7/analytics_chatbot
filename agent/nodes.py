@@ -530,11 +530,6 @@ def _compute_basic_metrics(data: List[Dict[str, Any]]) -> Dict[str, Any]:
     
     return metrics
 
-
-# ============================================================================
-# NEW VISUALIZATION PIPELINE
-# ============================================================================
-
 class ChartSpec(BaseModel):
     chart_type: str = Field(description="bar, line, scatter, box, histogram")
     title: str
@@ -942,12 +937,13 @@ Keep language clear and avoid jargon. Structure your response to flow with the v
 """
     
     response = llm.invoke(prompt)
-    
+    extracted_models = extract_model_names_from_text(response.content)
     return {
         "messages": [AIMessage(content=response.content)],
         "final_insights": response.content,
         "rendered_charts": rendered_charts,
-        "execution_path": execution_path
+        "execution_path": execution_path,
+        "mentioned_models": extracted_models if extracted_models else None
     }
 
 
