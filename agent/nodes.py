@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 from typing import Optional, List, Dict, Any
 from agent.state import AgentState
 from agent.tools import ALL_TOOLS, execute_sql_query
-from core.schema_context import SCHEMA_CONTEXT, METRIC_GUIDE
+from core.schema_context import SCHEMA_CONTEXT
 import plotly.express as px
 import plotly.graph_objects as go
 import pandas as pd
@@ -338,8 +338,6 @@ PARSED INTENT:
 - Time Range: {time_range}
 
 {SCHEMA_CONTEXT}
-
-{METRIC_GUIDE}
 
 {context_docs}
 
