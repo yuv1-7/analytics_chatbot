@@ -14,7 +14,7 @@ import pandas as pd
 import numpy as np
 
 llm = ChatGoogleGenerativeAI(
-    model="gemini-2.5-flash",
+    model='gemini-2.5-flash',
     api_key=os.getenv("gemini_api_key"),
     temperature=0.7
 )
@@ -1086,7 +1086,7 @@ def orchestrator_agent(state: AgentState) -> dict:
         }
     
     if needs_clarification:
-        clarification = state.get('clarification_question', "Could you please provide more details?")
+        clarification = state.get('clarification_question' or "Could you please provide more details?")
         return {
             "next_action": "ask_clarification",
             "execution_path": execution_path,
