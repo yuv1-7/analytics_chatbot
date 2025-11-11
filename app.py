@@ -175,6 +175,9 @@ def initialize_session_state():
             "requires_visualization": False,
             "context_documents": None,
             "generated_sql": None,
+            "sql_retry_count": 0,
+            "needs_sql_retry": False,
+            "sql_error_feedback": None,
             "sql_purpose": None,
             "expected_columns": None,
             "retrieved_data": None,
@@ -383,6 +386,10 @@ def process_query(user_input):
     st.session_state.conversation_state["viz_strategy"] = None
     st.session_state.conversation_state["viz_reasoning"] = None
     st.session_state.conversation_state["viz_warnings"] = None
+    
+    st.session_state.conversation_state["sql_retry_count"] = 0
+    st.session_state.conversation_state["needs_sql_retry"] = False
+    st.session_state.conversation_state["sql_error_feedback"] = None
 
     try:
         final_state = None
@@ -394,7 +401,13 @@ def process_query(user_input):
         for event in graph.stream(st.session_state.conversation_state):
             for node_name, value in event.items():
                 steps.append(node_name)
-                status_text.text(f"Processing: {node_name}")
+  
+                retry_count = value.get('sql_retry_count', 0)
+                if retry_count > 0 and node_name == 'sql_generation':
+                    status_text.text(f"🔄 Processing: {node_name} (Retry {retry_count}/3)")
+                else:
+                    status_text.text(f"Processing: {node_name}")
+                
                 progress_bar.progress(min(len(steps) / 10, 1.0))
                 
                 if 'messages' in value:
@@ -407,6 +420,15 @@ def process_query(user_input):
         if final_state:
             st.session_state.conversation_state.update(final_state)
             final_insights = extract_final_insights(final_state, all_messages)
+
+            retry_count = final_state.get('sql_retry_count', 0)
+            if retry_count >= 3 and final_state.get('sql_error_feedback'):
+
+                final_insights = (
+                    f"⚠️ **Note:** Query required {retry_count} attempts. "
+                    f"{final_state.get('sql_error_feedback', '')}\n\n"
+                    f"{final_insights}"
+                )
             
             rendered_charts = final_state.get('rendered_charts')
             if rendered_charts is None:

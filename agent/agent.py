@@ -7,6 +7,7 @@ from agent.nodes import (
     context_retrieval_agent,
     sql_generation_agent,
     data_retrieval_agent,
+    should_retry_sql,  
     analysis_computation_agent,
     visualization_specification_agent,
     visualization_rendering_agent,
@@ -57,12 +58,23 @@ def route_after_sql_generation(state: AgentState) -> str:
     if generated_sql:
         return RouteDecision.DATA_RETRIEVAL.value
     else:
-        # If SQL generation failed, skip to insights with error
         return RouteDecision.INSIGHTS.value
 
 
 def route_after_data_retrieval(state: AgentState) -> str:
-    """Route after data retrieval to either tools or analysis"""
+    """
+    Route after data retrieval to either:
+    - sql_generation (if retry needed)
+    - tools (if tool calls present)
+    - analysis (if data retrieved successfully)
+    """
+
+    needs_retry = state.get('needs_sql_retry', False)
+    
+    if needs_retry:
+        return RouteDecision.SQL_GENERATION.value
+    
+
     messages = state.get('messages', [])
     
     if not messages:
@@ -80,6 +92,7 @@ def route_after_data_retrieval(state: AgentState) -> str:
 def route_after_tools(state: AgentState) -> str:
     """Route after tools execute to analysis"""
     return RouteDecision.ANALYSIS.value
+
 
 def route_after_analysis(state: AgentState) -> str:
     analysis_results = state.get('analysis_results', {})
@@ -118,6 +131,7 @@ def route_after_insights(state: AgentState) -> str:
     """Route after insights generation to end"""
     return RouteDecision.END.value
 
+
 tool_node = ToolNode(ALL_TOOLS)
 
 builder = StateGraph(AgentState)
@@ -144,6 +158,7 @@ builder.add_conditional_edges(
         RouteDecision.END.value: END
     }
 )
+
 builder.add_conditional_edges(
     'context_retrieval',
     route_after_context_retrieval,
@@ -151,6 +166,7 @@ builder.add_conditional_edges(
         RouteDecision.SQL_GENERATION.value: 'sql_generation'
     }
 )
+
 builder.add_conditional_edges(
     'sql_generation',
     route_after_sql_generation,
@@ -159,14 +175,17 @@ builder.add_conditional_edges(
         RouteDecision.INSIGHTS.value: 'insight_generation'
     }
 )
+
 builder.add_conditional_edges(
     'data_retrieval',
     route_after_data_retrieval,
     {
+        RouteDecision.SQL_GENERATION.value: 'sql_generation',  
         RouteDecision.TOOLS.value: 'tools',
         RouteDecision.ANALYSIS.value: 'analysis'
     }
 )
+
 builder.add_conditional_edges(
     'tools',
     route_after_tools,
@@ -174,6 +193,7 @@ builder.add_conditional_edges(
         RouteDecision.ANALYSIS.value: 'analysis'
     }
 )
+
 builder.add_conditional_edges(
     'analysis',
     route_after_analysis,
@@ -182,6 +202,7 @@ builder.add_conditional_edges(
         RouteDecision.INSIGHTS.value: 'insight_generation'
     }
 )
+
 builder.add_conditional_edges(
     'visualization_spec',
     route_after_viz_spec,
@@ -190,6 +211,7 @@ builder.add_conditional_edges(
         RouteDecision.INSIGHTS.value: 'insight_generation'
     }
 )
+
 builder.add_conditional_edges(
     'visualization_rendering',
     route_after_viz_rendering,
@@ -197,6 +219,7 @@ builder.add_conditional_edges(
         RouteDecision.INSIGHTS.value: 'insight_generation'
     }
 )
+
 builder.add_conditional_edges(
     'insight_generation',
     route_after_insights,
@@ -204,4 +227,5 @@ builder.add_conditional_edges(
         RouteDecision.END.value: END
     }
 )
+
 graph = builder.compile()

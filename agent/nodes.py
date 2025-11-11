@@ -312,6 +312,31 @@ def context_retrieval_agent(state: AgentState) -> dict:
             "context_documents": context_docs,
             "execution_path": execution_path
         }
+def generate_relavent_columns(state: AgentState) -> dict:
+    execution_path = state.get('execution_path', [])
+    execution_path.append('finding_relavent_columns')
+
+    use_case = state.get('use_case')
+    models_requested = state.get('models_requested', [])
+    comparison_type = state.get('comparison_type')
+    metrics_requested = state.get('metrics_requested', [])
+    time_range = state.get('time_range')
+    context_docs = state.get('context_documents', [])
+
+    prompt = f"""
+     
+    """
+
+    try:
+        structured_llm = llm.with_structured_output(SQLQuerySpec)
+        result = structured_llm.invoke(prompt)
+
+        return{
+            "expected_columns": result.expected_columns,
+            "execution_path": execution_path
+        }
+    except Exception as e:
+        print(f"can't derive relavent columns: {e}")
 
 
 def sql_generation_agent(state: AgentState) -> dict:
@@ -325,6 +350,49 @@ def sql_generation_agent(state: AgentState) -> dict:
     time_range = state.get('time_range')
     context_docs = state.get('context_documents', [])
     
+    # Get retry information
+    retry_count = state.get('sql_retry_count', 0)
+    previous_sql = state.get('generated_sql')
+    previous_error = state.get('sql_error_feedback')
+    
+    # Build retry context if this is a retry attempt
+    retry_context = ""
+    if retry_count > 0 and previous_sql:
+        retry_context = f"""
+⚠️ RETRY ATTEMPT {retry_count}/3:
+The previous query returned 0 rows. Please review and modify the query to be less restrictive.
+
+Previous SQL that failed:
+```sql
+{previous_sql}
+```
+
+Issue: {previous_error}
+
+CRITICAL FIXES NEEDED:
+1. **Relax ILIKE filters** - Make patterns more general
+   - Instead of: model_name ILIKE '%random forest classifier%'
+   - Try: model_name ILIKE '%random%' OR algorithm ILIKE '%forest%'
+
+2. **Reduce JOIN complexity** - Use LEFT JOINs to avoid eliminating rows
+   - Check if all JOINs are necessary
+   - Consider fetching from fewer tables
+
+3. **Remove overly specific filters**
+   - Check date ranges are reasonable
+   - Verify use_case spelling matches database exactly
+   - Remove unnecessary WHERE conditions one by one
+
+4. **Broaden search patterns**
+   - Use OR conditions to cast a wider net
+   - Try partial matches on key fields
+   - Consider querying just the models table first to verify data exists
+
+5. **Verify table/column names**
+   - Double-check spelling of table and column names
+   - Ensure is_active filter isn't excluding all models
+"""
+    
     prompt = f"""
 You are a SQL expert specializing in pharma commercial analytics databases. Your task is to generate a **valid PostgreSQL SELECT query** that accurately answers the user's question.
 
@@ -337,14 +405,16 @@ PARSED INTENT:
 - Metrics: {metrics_requested}
 - Time Range: {time_range}
 
+{retry_context}
+
 {SCHEMA_CONTEXT}
 
 {context_docs}
 
 INSTRUCTIONS:
 1. Generate a **valid PostgreSQL SELECT query** only.
-2. Use appropriate **JOINs** to connect related tables.
-3. Always **filter models with `is_active = true`**.
+2. Use appropriate **JOINs** to connect related tables (prefer LEFT JOIN if unsure).
+3. Always **filter models with `is_active = true`** (but verify this field exists).
 4. Use **`data_split = 'test'`** for performance metrics unless the user specifies otherwise.
 5. Use the **`latest_model_executions` view** to retrieve the most recent model execution.
 6. Handle **NULL values** appropriately.
@@ -353,15 +423,27 @@ INSTRUCTIONS:
 9. Limit results to a **reasonable size** (e.g., `LIMIT 100`).
 
 IMPORTANT – Fuzzy Matching for Model Names:
-- Use partial matches, e.g.:
-  - `ILIKE '%random forest%'` instead of `= 'Random Forest'`
-  - `ILIKE '%xgboost%'` or `ILIKE '%xgb%'`
-  - `ILIKE '%lightgbm%'` or `ILIKE '%lgb%'`
+- Use **broad partial matches**, especially on retries:
+  - `ILIKE '%random%'` or `ILIKE '%forest%'` (very broad)
+  - `ILIKE '%xgb%'` or `ILIKE '%boost%'`
+  - `ILIKE '%lgb%'` or `ILIKE '%light%'`
+- Combine with OR conditions for flexibility
 
-Example:
+{"🔴 RETRY MODE: Be MORE lenient with filters. The goal is to return SOME data." if retry_count > 0 else ""}
+
+Example for retry (very broad):
 ```sql
-WHERE (m.model_name ILIKE '%random forest%' OR m.algorithm ILIKE '%random forest%')
-  AND m.use_case ILIKE '%nrx%'
+SELECT m.model_name, m.algorithm, m.use_case
+FROM models m
+WHERE (
+  m.model_name ILIKE '%random%' 
+  OR m.model_name ILIKE '%forest%'
+  OR m.algorithm ILIKE '%random%'
+  OR m.algorithm ILIKE '%forest%'
+)
+AND m.is_active = true
+LIMIT 50;
+```
 """
 
     try:
@@ -373,7 +455,7 @@ WHERE (m.model_name ILIKE '%random forest%' OR m.algorithm ILIKE '%random forest
             "sql_purpose": result.query_purpose,
             "expected_columns": result.expected_columns,
             "execution_path": execution_path,
-            "messages": [AIMessage(content=f"Generated SQL query: {result.query_purpose}")]
+            "messages": [AIMessage(content=f"Generated SQL query (Attempt {retry_count + 1}): {result.query_purpose}")]
         }
     
     except Exception as e:
@@ -392,23 +474,86 @@ def data_retrieval_agent(state: AgentState) -> dict:
     execution_path.append('data_retrieval')
     
     generated_sql = state.get('generated_sql')
+    retry_count = state.get('sql_retry_count', 0)
     
     if not generated_sql:
         return {
             "execution_path": execution_path,
-            "messages": [AIMessage(content="No SQL query was generated")]
+            "messages": [AIMessage(content="No SQL query was generated")],
+            "needs_sql_retry": False
         }
     
+    # Execute the SQL query
     response = execute_sql_query.invoke(generated_sql)
-    tool_message=ToolMessage(content=json.dumps(response), tool_call_id=f"sql_exec_{id(generated_sql)}")
+    tool_message = ToolMessage(
+        content=json.dumps(response), 
+        tool_call_id=f"sql_exec_{id(generated_sql)}"
+    )
     
-    extracted_models = extract_model_names_from_text(str(response.get('content','')))
+    # Check if query returned 0 rows
+    result_data = response.get('data', []) if response.get('success') else []
+    row_count = len(result_data) if isinstance(result_data, list) else 0
     
-    return {
+    # Determine if we need to retry
+    updated_state = {
         "messages": [tool_message],
         "execution_path": execution_path,
-        "mentioned_models": extracted_models if extracted_models else None
     }
+    
+    if row_count == 0 and retry_count < 3:
+        # Need to retry - send back to SQL generation
+        print(f"⚠️ Query returned 0 rows. Initiating retry {retry_count + 1}/3")
+        updated_state.update({
+            "needs_sql_retry": True,
+            "sql_retry_count": retry_count + 1,
+            "sql_error_feedback": (
+                f"Query returned 0 rows. The query may be too restrictive. "
+                f"Consider: (1) Using broader ILIKE patterns, "
+                f"(2) Reducing the number of filters, "
+                f"(3) Using LEFT JOINs instead of INNER JOINs, "
+                f"(4) Verifying table/column names and values exist in database."
+            )
+        })
+    
+    elif row_count == 0 and retry_count >= 3:
+        # Max retries reached
+        print(f"❌ Maximum retry attempts (3) reached. No data found after {retry_count} attempts.")
+        updated_state.update({
+            "needs_sql_retry": False,
+            "sql_retry_count": retry_count,
+            "sql_error_feedback": (
+                f"Maximum retry attempts (3) reached. No data found. "
+                f"This may indicate: (1) No matching data exists in database, "
+                f"(2) Query requirements are too specific, "
+                f"(3) Data quality or schema issues."
+            )
+        })
+    
+    else:
+        # Success - data retrieved
+        extracted_models = extract_model_names_from_text(str(result_data))
+        print(f"✅ Successfully retrieved {row_count} rows")
+        updated_state.update({
+            "needs_sql_retry": False,
+            "sql_retry_count": 0,  # Reset counter on success
+            "mentioned_models": extracted_models if extracted_models else None
+        })
+    
+    return updated_state
+
+
+def should_retry_sql(state: AgentState) -> str:
+    """
+    Routing function to determine if SQL generation should be retried.
+    Returns the next node name.
+    """
+    needs_retry = state.get('needs_sql_retry', False)
+    
+    if needs_retry:
+        print(f"🔄 Routing back to sql_generation for retry...")
+        return "sql_generation"  # Route back to SQL generation
+    else:
+        return "analysis"  # Continue to analysis node
 
 
 class AnalysisOutput(BaseModel):
