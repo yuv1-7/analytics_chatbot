@@ -64,3 +64,5 @@ class AgentState(TypedDict):
     last_query_summary: Optional[str]
     current_topic: Optional[str]
     clarification_attempts: int
+
+    personalized_business_context: Optional[str]

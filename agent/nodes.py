@@ -22,6 +22,37 @@ llm = ChatGoogleGenerativeAI(
 llm_with_tools = llm.bind_tools(ALL_TOOLS)
 
 
+
+def get_personalized_context_section(state: AgentState) -> str:
+    """
+    Extract and format personalized business context for inclusion in prompts.
+    
+    Args:
+        state: Current agent state
+    
+    Returns:
+        Formatted context section or empty string
+    """
+    personalized_context = state.get('personalized_business_context', '')
+    
+    if not personalized_context or not personalized_context.strip():
+        return ""
+    
+    return f"""
+
+### PERSONALIZED BUSINESS CONTEXT (CRITICAL - USER PROVIDED):
+The user has provided the following specific business context that MUST be considered in your analysis and responses:
+
+{personalized_context.strip()}
+
+IMPORTANT: This personalized context takes precedence over generic knowledge. Use this context to:
+- Customize your analysis and recommendations
+- Reference specific products, competitors, or markets mentioned
+- Align your insights with the user's business priorities
+- Provide relevant examples from their context
+"""
+
+
 class ParsedIntent(BaseModel):
     use_case: Optional[str] = Field(
         description="One of: NRx_forecasting, HCP_engagement, feature_importance_analysis, model_drift_detection, messaging_optimization"
@@ -104,6 +135,7 @@ def query_understanding_agent(state: AgentState) -> dict:
     clarification_attempts = state.get('clarification_attempts', 0)
     last_query_summary = state.get('last_query_summary')
     
+    personalized_context_section = get_personalized_context_section(state)
     context_parts = []
     
     if mentioned_models:
@@ -288,7 +320,19 @@ def context_retrieval_agent(state: AgentState) -> dict:
                 'keywords': doc['metadata'].get('keywords', []),
                 'source': 'vector_db'
             })
-        
+
+        personalized_context = state.get('personalized_business_context', '')
+        if personalized_context and personalized_context.strip():
+                    context_docs.insert(0, {
+                        'doc_id': 'PERSONALIZED_CONTEXT',
+                        'category': 'personalized',
+                        'title': 'User Personalized Business Context',
+                        'content': personalized_context.strip(),
+                        'relevance_score': 1.0,
+                        'keywords': ['personalized', 'user_context'],
+                        'source': 'user_input'
+                    })
+
         print(f"Retrieved {len(context_docs)} relevant documents from vector DB")
         for doc in context_docs[:3]:
             print(f"  - {doc['title']} (relevance: {doc['relevance_score']:.3f})")
@@ -301,6 +345,19 @@ def context_retrieval_agent(state: AgentState) -> dict:
     except Exception as e:
         print(f"Vector DB retrieval failed: {e}")
         print("Falling back to empty context")
+
+        context_docs = []
+        personalized_context = state.get('personalized_business_context', '')
+        if personalized_context and personalized_context.strip():
+            context_docs.append({
+                'doc_id': 'PERSONALIZED_CONTEXT',
+                'category': 'personalized',
+                'title': 'User Personalized Business Context',
+                'content': personalized_context.strip(),
+                'relevance_score': 1.0,
+                'keywords': ['personalized', 'user_context'],
+                'source': 'user_input'
+            })
         
         context_docs = [{
             'type': 'error',
@@ -324,6 +381,8 @@ def sql_generation_agent(state: AgentState) -> dict:
     metrics_requested = state.get('metrics_requested', [])
     time_range = state.get('time_range')
     context_docs = state.get('context_documents', [])
+
+    personalized_context_section = get_personalized_context_section(state)
     
     # Get retry information
     retry_count = state.get('sql_retry_count', 0)
@@ -385,6 +444,7 @@ PARSED INTENT:
 {SCHEMA_CONTEXT}
 
 {context_docs}
+{personalized_context_section}
 
 INSTRUCTIONS:
 1. Generate a **valid PostgreSQL SELECT query** only.
@@ -396,6 +456,7 @@ INSTRUCTIONS:
 7. Use **ILIKE** for all case-insensitive string comparisons.
 8. Apply **meaningful ordering** for results.
 9. Limit results to a **reasonable size** (e.g., `LIMIT 100`).
+10. If personalized context mentions specific products, models, or metrics, prioritize those in your query.
 
 IMPORTANT – Fuzzy Matching for Model Names:
 - Use **broad partial matches**, especially on retries:
@@ -545,6 +606,8 @@ def analysis_computation_agent(state: AgentState) -> dict:
     
     messages = state.get('messages', [])
     tool_results = []
+
+    personalized_context_section = get_personalized_context_section(state)
     
     from langchain_core.messages import ToolMessage
     for msg in messages:
@@ -579,6 +642,7 @@ Use Case: {state.get('use_case', 'unknown')}
 
 Retrieved Data:
 {json.dumps(successful_data[:50], indent=2, default=str)}
+{personalized_context_section}
 
 Provide analysis in the following structure:
 1. **Key Metrics**: Calculate or extract important quantitative metrics
@@ -716,6 +780,8 @@ def visualization_specification_agent(state: AgentState) -> dict:
     
     analysis_results = state.get('analysis_results', {})
     raw_data = analysis_results.get('raw_data', [])
+
+    personalized_context_section = get_personalized_context_section(state)
     
     df = None
     for result in raw_data:
@@ -753,6 +819,7 @@ DATA STRUCTURE:
 {json.dumps(data_summary, indent=2, default=str)}
 
 {VIZ_RULES}
+{personalized_context_section}
 
 EXAMPLES:
 

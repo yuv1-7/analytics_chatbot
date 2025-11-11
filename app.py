@@ -16,15 +16,11 @@ st.set_page_config(
     page_title="Pharma Analytics Assistant",
     page_icon="🏥",
     layout="wide",
-    initial_sidebar_state="collapsed"
+    initial_sidebar_state="expanded"
 )
 
 st.markdown("""
 <style>
-    [data-testid="stSidebar"] {
-        display: none;
-    }
-    
     .main {
         background-color: #1a1a1a;
         padding: 2rem 4rem;
@@ -90,6 +86,17 @@ st.markdown("""
         margin-bottom: 1rem;
     }
     
+    .context-badge {
+        display: inline-block;
+        padding: 0.5rem 1rem;
+        background-color: #fff3cd;
+        color: #856404;
+        border-radius: 6px;
+        font-size: 0.9rem;
+        margin-bottom: 1rem;
+        margin-left: 1rem;
+    }
+    
     .input-section {
         background-color: #2a2a2a;
         padding: 1.5rem;
@@ -153,6 +160,26 @@ st.markdown("""
         padding-bottom: 2rem;
         max-width: 1200px;
     }
+    
+    .stTextArea textarea {
+        background-color: #2a2a2a;
+        color: #ffffff;
+        border: 2px solid #555;
+        border-radius: 6px;
+    }
+    
+    .stTextArea textarea:focus {
+        border-color: #7c7ce8;
+    }
+    
+    /* Sidebar styling */
+    [data-testid="stSidebar"] {
+        background-color: #2a2a2a;
+    }
+    
+    [data-testid="stSidebar"] .element-container {
+        color: #ffffff;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -160,6 +187,13 @@ st.markdown("""
 def initialize_session_state():
     if 'chat_history' not in st.session_state:
         st.session_state.chat_history = []
+    
+    # Initialize personalized business context
+    if 'personalized_context' not in st.session_state:
+        st.session_state.personalized_context = ""
+    
+    if 'context_last_updated' not in st.session_state:
+        st.session_state.context_last_updated = None
     
     if 'conversation_state' not in st.session_state:
         st.session_state.conversation_state = {
@@ -175,9 +209,6 @@ def initialize_session_state():
             "requires_visualization": False,
             "context_documents": None,
             "generated_sql": None,
-            "sql_retry_count": 0,
-            "needs_sql_retry": False,
-            "sql_error_feedback": None,
             "sql_purpose": None,
             "expected_columns": None,
             "retrieved_data": None,
@@ -198,7 +229,8 @@ def initialize_session_state():
             "current_topic": None,
             "viz_strategy": None,
             "viz_reasoning": None,
-            "viz_warnings": None
+            "viz_warnings": None,
+            "personalized_business_context": ""  # Add to conversation state
         }
     
     if 'db_initialized' not in st.session_state:
@@ -222,7 +254,8 @@ def initialize_log_dataframe():
             'processing_time',
             'num_visualizations',
             'num_tool_results',
-            'needs_clarification'
+            'needs_clarification',
+            'has_personalized_context'
         ])
 
 
@@ -379,17 +412,15 @@ def extract_final_insights(final_state, all_messages):
 def process_query(user_input):
     start_time = time.time()
     
+    # Add personalized context to conversation state
     st.session_state.conversation_state["user_query"] = user_input
+    st.session_state.conversation_state["personalized_business_context"] = st.session_state.personalized_context
     st.session_state.conversation_state["execution_path"] = []
     st.session_state.conversation_state["rendered_charts"] = None
     st.session_state.conversation_state["visualization_specs"] = None
     st.session_state.conversation_state["viz_strategy"] = None
     st.session_state.conversation_state["viz_reasoning"] = None
     st.session_state.conversation_state["viz_warnings"] = None
-    
-    st.session_state.conversation_state["sql_retry_count"] = 0
-    st.session_state.conversation_state["needs_sql_retry"] = False
-    st.session_state.conversation_state["sql_error_feedback"] = None
 
     try:
         final_state = None
@@ -401,13 +432,7 @@ def process_query(user_input):
         for event in graph.stream(st.session_state.conversation_state):
             for node_name, value in event.items():
                 steps.append(node_name)
-  
-                retry_count = value.get('sql_retry_count', 0)
-                if retry_count > 0 and node_name == 'sql_generation':
-                    status_text.text(f"🔄 Processing: {node_name} (Retry {retry_count}/3)")
-                else:
-                    status_text.text(f"Processing: {node_name}")
-                
+                status_text.text(f"Processing: {node_name}")
                 progress_bar.progress(min(len(steps) / 10, 1.0))
                 
                 if 'messages' in value:
@@ -420,15 +445,6 @@ def process_query(user_input):
         if final_state:
             st.session_state.conversation_state.update(final_state)
             final_insights = extract_final_insights(final_state, all_messages)
-
-            retry_count = final_state.get('sql_retry_count', 0)
-            if retry_count >= 3 and final_state.get('sql_error_feedback'):
-
-                final_insights = (
-                    f"⚠️ **Note:** Query required {retry_count} attempts. "
-                    f"{final_state.get('sql_error_feedback', '')}\n\n"
-                    f"{final_insights}"
-                )
             
             rendered_charts = final_state.get('rendered_charts')
             if rendered_charts is None:
@@ -437,10 +453,6 @@ def process_query(user_input):
             viz_strategy = final_state.get('viz_strategy')
             viz_reasoning = final_state.get('viz_reasoning')
             viz_warnings = final_state.get('viz_warnings', [])
-            
-            print(f"DEBUG: Final state has {len(rendered_charts)} charts")
-            for chart in rendered_charts:
-                print(f"  - {chart.get('title')} ({chart.get('type')})")
 
             assistant_response = {
                 'type': 'assistant',
@@ -470,7 +482,8 @@ def process_query(user_input):
                 'processing_time': round(time.time() - start_time, 2),
                 'num_visualizations': len(rendered_charts),
                 'num_tool_results': len(format_tool_results(all_messages) or []),
-                'needs_clarification': final_state.get('needs_clarification', False)
+                'needs_clarification': final_state.get('needs_clarification', False),
+                'has_personalized_context': bool(st.session_state.personalized_context)
             }
 
             st.session_state.query_log.loc[len(st.session_state.query_log)] = log_entry
@@ -491,7 +504,8 @@ def process_query(user_input):
             'processing_time': round(time.time() - start_time, 2),
             'num_visualizations': 0,
             'num_tool_results': 0,
-            'needs_clarification': False
+            'needs_clarification': False,
+            'has_personalized_context': bool(st.session_state.personalized_context)
         }
 
         st.session_state.query_log.loc[len(st.session_state.query_log)] = log_entry
@@ -506,6 +520,63 @@ def main():
     initialize_session_state()
     initialize_log_dataframe()
 
+    # Sidebar for personalized context
+    with st.sidebar:
+        st.markdown("### 📝 Personalized Business Context")
+        st.markdown("Add your own business context to customize responses:")
+        
+        # Text area for context input
+        new_context = st.text_area(
+            "Enter your business context",
+            value=st.session_state.personalized_context,
+            height=200,
+            placeholder="Example:\n- Our company focuses on oncology products\n- We launched Product X in Q3 2024\n- Our main competitors are Company A and Company B\n- Target markets: US Northeast, California",
+            help="This context will be included in all agent prompts to provide personalized responses"
+        )
+        
+        # Save/Update button
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("💾 Save Context", use_container_width=True):
+                st.session_state.personalized_context = new_context
+                st.session_state.context_last_updated = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                st.success("✅ Context saved!")
+                st.rerun()
+        
+        with col2:
+            if st.button("🗑️ Clear Context", use_container_width=True):
+                st.session_state.personalized_context = ""
+                st.session_state.context_last_updated = None
+                st.success("✅ Context cleared!")
+                st.rerun()
+        
+        # Display context status
+        if st.session_state.personalized_context:
+            st.markdown("---")
+            st.markdown("**📊 Context Status**")
+            st.info(f"**Characters:** {len(st.session_state.personalized_context)}")
+            if st.session_state.context_last_updated:
+                st.info(f"**Last Updated:** {st.session_state.context_last_updated}")
+            
+            # Preview
+            with st.expander("👁️ Preview Context"):
+                st.text(st.session_state.personalized_context)
+        else:
+            st.markdown("---")
+            st.info("ℹ️ No personalized context set. Responses will use default knowledge only.")
+        
+        st.markdown("---")
+        st.markdown("### 💡 Context Tips")
+        st.markdown("""
+        - Include product names and launch dates
+        - Specify target markets/regions
+        - Mention key competitors
+        - Add therapeutic areas of focus
+        - Note any special business rules
+        - Include relevant KPIs or metrics
+        """)
+
+    # Main content area
     st.markdown("""
     <div class="app-header">
         <div class="app-title">🏥 Pharma Analytics Assistant</div>
@@ -513,15 +584,23 @@ def main():
     </div>
     """, unsafe_allow_html=True)
     
-    if st.session_state.db_initialized:
-        st.markdown('<div class="status-badge">● Database Connected</div>', unsafe_allow_html=True)
-    else:
-        st.error(f"❌ Database Error: {st.session_state.get('db_error', 'Unknown error')}")
+    # Status badges
+    status_col1, status_col2 = st.columns([1, 2])
+    with status_col1:
+        if st.session_state.db_initialized:
+            st.markdown('<div class="status-badge">● Database Connected</div>', unsafe_allow_html=True)
+        else:
+            st.error(f"❌ Database Error: {st.session_state.get('db_error', 'Unknown error')}")
+    
+    with status_col2:
+        if st.session_state.personalized_context:
+            context_preview = st.session_state.personalized_context[:50] + "..." if len(st.session_state.personalized_context) > 50 else st.session_state.personalized_context
+            st.markdown(f'<div class="context-badge">📝 Custom Context Active: {len(st.session_state.personalized_context)} chars</div>', unsafe_allow_html=True)
     
     st.markdown('<div class="section-header">💬 Conversation</div>', unsafe_allow_html=True)
     
     if not st.session_state.chat_history:
-        st.info("""
+        welcome_message = """
         👋 **Welcome to Pharma Analytics Assistant!**
         
         I can help you analyze pharmaceutical data, compare models, detect drift, and generate insights.
@@ -531,9 +610,16 @@ def main():
         - 📊 Feature Analysis  
         - 🎯 Drift Detection
         - 📈 Generate Visualizations
+        """
         
-        Type your question below to get started!
-        """)
+        if st.session_state.personalized_context:
+            welcome_message += f"\n\n📝 **I see you've added personalized context!** I'll incorporate your business context into all my responses."
+        else:
+            welcome_message += f"\n\n💡 **Tip:** Add your personalized business context in the sidebar to get more customized insights!"
+        
+        welcome_message += "\n\nType your question below to get started!"
+        
+        st.info(welcome_message)
     else:
         for message in st.session_state.chat_history:
             display_chat_message(message)
@@ -582,7 +668,8 @@ def main():
                     "loop_count": 0, "next_action": None, "execution_path": [],
                     "conversation_context": {}, "mentioned_models": [], "mentioned_model_ids": [],
                     "last_query_summary": None, "current_topic": None, "viz_strategy": None,
-                    "viz_reasoning": None, "viz_warnings": None
+                    "viz_reasoning": None, "viz_warnings": None,
+                    "personalized_business_context": st.session_state.personalized_context
                 }
                 st.rerun()
 
