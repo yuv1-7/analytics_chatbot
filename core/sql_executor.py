@@ -11,7 +11,6 @@ class SQLExecutionError(Exception):
     """Custom exception for SQL execution errors"""
     pass
 
-
 class SQLValidator:
     """Validates SQL queries for safety"""
     
@@ -52,7 +51,7 @@ class SQLValidator:
         
         if sql.count(';') > 1:
             return False, "Multiple statements not allowed"
-        
+         
         return True, None
 
 
