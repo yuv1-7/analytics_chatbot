@@ -312,31 +312,6 @@ def context_retrieval_agent(state: AgentState) -> dict:
             "context_documents": context_docs,
             "execution_path": execution_path
         }
-def generate_relavent_columns(state: AgentState) -> dict:
-    execution_path = state.get('execution_path', [])
-    execution_path.append('finding_relavent_columns')
-
-    use_case = state.get('use_case')
-    models_requested = state.get('models_requested', [])
-    comparison_type = state.get('comparison_type')
-    metrics_requested = state.get('metrics_requested', [])
-    time_range = state.get('time_range')
-    context_docs = state.get('context_documents', [])
-
-    prompt = f"""
-     
-    """
-
-    try:
-        structured_llm = llm.with_structured_output(SQLQuerySpec)
-        result = structured_llm.invoke(prompt)
-
-        return{
-            "expected_columns": result.expected_columns,
-            "execution_path": execution_path
-        }
-    except Exception as e:
-        print(f"can't derive relavent columns: {e}")
 
 
 def sql_generation_agent(state: AgentState) -> dict:
@@ -512,6 +487,7 @@ def data_retrieval_agent(state: AgentState) -> dict:
                 f"(2) Reducing the number of filters, "
                 f"(3) Using LEFT JOINs instead of INNER JOINs, "
                 f"(4) Verifying table/column names and values exist in database."
+                f"(5) consider changing the entire query if needed"
             )
         })
     
