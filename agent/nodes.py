@@ -182,6 +182,7 @@ METRICS: RMSE, MAE, R2, AUC-ROC, Accuracy, Precision, Recall, F1, TRx, NRx
 
 CONVERSATION CONTEXT (USE THIS TO AVOID ASKING FOR INFO ALREADY GIVEN):
 {context_summary}
+{personalized_context_section}
 
 CRITICAL CLARIFICATION RULES:
 1. Check conversation context FIRST before asking for clarification
@@ -456,7 +457,10 @@ INSTRUCTIONS:
 7. Use **ILIKE** for all case-insensitive string comparisons.
 8. Apply **meaningful ordering** for results.
 9. Limit results to a **reasonable size** (e.g., `LIMIT 100`).
-10. If personalized context mentions specific products, models, or metrics, prioritize those in your query.
+10. **CRITICAL**: If personalized context mentions specific model names, products, or competitors, USE THOSE EXACT NAMES in your WHERE clauses with ILIKE patterns.
+
+Example: If context mentions "RF_NRx_Cardio_v2.1", use:
+WHERE model_name ILIKE '%RF_NRx_Cardio%' OR model_name ILIKE '%Cardio%'
 
 IMPORTANT – Fuzzy Matching for Model Names:
 - Use **broad partial matches**, especially on retries:
@@ -1075,6 +1079,9 @@ def insight_generation_agent(state: AgentState) -> dict:
     viz_strategy = state.get('viz_strategy')
     viz_reasoning = state.get('viz_reasoning')
     viz_warnings = state.get('viz_warnings', [])
+
+    personalized_context_section = get_personalized_context_section(state)
+
     
     viz_context = ""
     if rendered_charts:
@@ -1110,6 +1117,7 @@ Analysis Results:
 Context:
 {json.dumps(context_docs[:3], indent=2, default=str)}
 {viz_context}
+{personalized_context_section}
 
 **Instructions:**
 1. Direct answer to the user's question
