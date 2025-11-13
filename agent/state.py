@@ -34,7 +34,8 @@ class AgentState(TypedDict):
     generated_sql: Optional[str]
     sql_purpose: Optional[str]
     expected_columns: Optional[List[str]]
-
+    
+    # SQL Retry Logic (EXISTING FEATURE - KEEP THIS)
     sql_retry_count: int  
     needs_sql_retry: bool  
     sql_error_feedback: Optional[str]
@@ -64,5 +65,14 @@ class AgentState(TypedDict):
     last_query_summary: Optional[str]
     current_topic: Optional[str]
     clarification_attempts: int
-
+    
+    # Personalized Business Context (EXISTING FEATURE - KEEP THIS)
     personalized_business_context: Optional[str]
+    
+    # NEW: Conversation Memory Fields
+    session_id: str
+    turn_number: int
+    needs_memory: bool
+    needs_database: bool
+    conversation_summaries: Optional[List[Dict]]
+    summary_generated: bool
