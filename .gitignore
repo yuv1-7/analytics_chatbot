@@ -2,3 +2,5 @@
 **/__pycache__/
 __pycache__/
 chroma_db/
+test_results/
+test_queries.json
