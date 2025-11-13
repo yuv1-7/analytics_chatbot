@@ -1280,7 +1280,9 @@ def insight_generation_agent(state: AgentState) -> dict:
     execution_path.append('insight_generation')
     
     analysis_results = state.get('analysis_results', {})
-    context_docs = state.get('context_documents', [])
+    context_docs = state.get('context_documents')
+    if not context_docs:
+        context_docs = []
     comparison_type = state.get('comparison_type')
     rendered_charts = state.get('rendered_charts', [])
     viz_strategy = state.get('viz_strategy')
