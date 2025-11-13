@@ -33,7 +33,8 @@ def route_after_orchestrator(state: AgentState) -> str:
     
     route_map = {
         'ask_clarification': RouteDecision.END,
-        'retrieve_data': RouteDecision.CONTEXT_RETRIEVAL,
+        'retrieve_memory': RouteDecision.CONTEXT_RETRIEVAL,  # Changed from 'retrieve_data'
+        'skip_to_sql': RouteDecision.SQL_GENERATION,  # NEW: Skip directly to SQL
         'end': RouteDecision.END
     }
     
@@ -45,10 +46,19 @@ def route_after_orchestrator(state: AgentState) -> str:
     
     return route.value
 
-
 def route_after_context_retrieval(state: AgentState) -> str:
-    """Route to SQL generation after context retrieval"""
-    return RouteDecision.SQL_GENERATION.value
+    """
+    Route after context retrieval based on needs_database flag
+    """
+    needs_database = state.get('needs_database', True)
+    
+    if needs_database:
+        # Normal flow: context → SQL → data → analysis → viz → insights
+        return RouteDecision.SQL_GENERATION.value
+    else:
+        # Memory-only query: context → insights (skip SQL)
+        print("Memory-only query detected, skipping SQL generation")
+        return RouteDecision.INSIGHTS.value
 
 
 def route_after_sql_generation(state: AgentState) -> str:
@@ -155,6 +165,7 @@ builder.add_conditional_edges(
     route_after_orchestrator,
     {
         RouteDecision.CONTEXT_RETRIEVAL.value: 'context_retrieval',
+        RouteDecision.SQL_GENERATION.value: 'sql_generation',  # NEW: Direct to SQL
         RouteDecision.END.value: END
     }
 )
@@ -163,7 +174,8 @@ builder.add_conditional_edges(
     'context_retrieval',
     route_after_context_retrieval,
     {
-        RouteDecision.SQL_GENERATION.value: 'sql_generation'
+        RouteDecision.SQL_GENERATION.value: 'sql_generation',
+        RouteDecision.INSIGHTS.value: 'insight_generation'  # NEW: Skip to insights for memory-only
     }
 )
 
