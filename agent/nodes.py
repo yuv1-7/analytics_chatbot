@@ -97,6 +97,14 @@ class ParsedIntent(BaseModel):
         default=None,
         description="Model names after resolving references from conversation context"
     )
+    references_specific_turn: bool = Field(  # NEW
+        default=False,
+        description="True if query references specific past turn (e.g., 'turn 3', 'previous analysis')"
+    )
+    referenced_turn_number: Optional[int] = Field(  # NEW
+        default=None,
+        description="Turn number referenced (e.g., 3 from 'turn 3')"
+    )
 
 
 class SQLQuerySpec(BaseModel):
@@ -126,6 +134,28 @@ def extract_model_names_from_text(text: str) -> List[str]:
     return list(set(models))
 
 
+def detect_turn_reference(query: str) -> tuple[bool, Optional[int]]:
+    """
+    Detect if query references a specific past turn
+    
+    Returns:
+        (has_reference, turn_number)
+    """
+    query_lower = query.lower()
+    
+    # Pattern 1: "turn X"
+    turn_match = re.search(r'\bturn\s+(\d+)\b', query_lower)
+    if turn_match:
+        return True, int(turn_match.group(1))
+    
+    # Pattern 2: Temporal keywords
+    temporal_keywords = ['previous', 'earlier', 'last time', 'before', 'first', 'initial']
+    if any(kw in query_lower for kw in temporal_keywords):
+        return True, None  # Has reference but no specific turn number
+    
+    return False, None
+
+
 def query_understanding_agent(state: AgentState) -> dict:
     query = state['user_query']
     messages = state.get('messages', [])
@@ -134,6 +164,10 @@ def query_understanding_agent(state: AgentState) -> dict:
     current_topic = state.get('current_topic')
     clarification_attempts = state.get('clarification_attempts', 0)
     last_query_summary = state.get('last_query_summary')
+    final_insights = state.get('final_insights')  # NEW: Last insight generated
+    
+    # NEW: Check for explicit turn reference
+    has_turn_ref, turn_number = detect_turn_reference(query)
     
     personalized_context_section = get_personalized_context_section(state)
     context_parts = []
@@ -146,6 +180,10 @@ def query_understanding_agent(state: AgentState) -> dict:
     
     if last_query_summary:
         context_parts.append(f"Previous query: {last_query_summary}")
+    
+    # NEW: Include last insight summary for "why" questions
+    if final_insights:
+        context_parts.append(f"Last insight summary: {final_insights[:500]}...")
     
     recent_content = []
     for msg in messages[-3:]:
@@ -200,7 +238,13 @@ REFERENCE RESOLUTION PRIORITY:
 1. If "these/those/them/they" mentioned → Use mentioned_models from context
 2. If "the ensemble" mentioned → Look for ensemble in context, or assume ensemble_vs_base comparison
 3. If "that model" mentioned → Use last mentioned model
-4. Only set needs_clarification=True if attempts==0 AND no context available AND query is truly ambiguous
+4. If "turn X" or "previous/earlier" mentioned → Set references_specific_turn=True
+5. Only set needs_clarification=True if attempts==0 AND no context available AND query is truly ambiguous
+
+TURN REFERENCES:
+- Detect if query references specific past turns: "turn 3", "previous analysis", "earlier", "last time"
+- Set references_specific_turn=True if detected
+- Extract turn number if explicitly mentioned (e.g., "turn 3" → 3)
 
 Extract all relevant information. BE GENEROUS with assumptions when context exists.
 
@@ -209,7 +253,10 @@ Examples:
 - "Compare these" (with context models=['RF', 'XGB']) → resolved_models=['RF', 'XGB'], comparison_type=performance
 - "show performance" (with context use_case=NRx_forecasting) → use_case=NRx_forecasting, comparison_type=performance
 - "why is ensemble worse" (no context, attempts=0) → needs_clarification=True
-- "why is ensemble worse" (no context, attempts=1) → comparison_type=ensemble_vs_base, make assumptions"""
+- "why is ensemble worse" (no context, attempts=1) → comparison_type=ensemble_vs_base, make assumptions
+- "What was the RMSE in turn 3?" → references_specific_turn=True, referenced_turn_number=3, metrics=['RMSE']
+- "Why did XGBoost perform better?" (with recent context) → references_previous_context=True, models from context
+"""
     
     structured_llm = llm.with_structured_output(ParsedIntent)
     
@@ -228,6 +275,7 @@ Examples:
     final_models = result.models_requested or []
     new_mentioned_models = []
     
+    # Handle pronoun resolution
     if result.references_previous_context:
         if result.resolved_models:
             final_models = result.resolved_models
@@ -255,11 +303,22 @@ Examples:
     if final_models:
         new_mentioned_models.extend(final_models)
     
+    # Extract models from recent AI messages
     last_ai_messages = [msg for msg in messages[-6:] if isinstance(msg, AIMessage)]
     for msg in last_ai_messages:
         if hasattr(msg, 'content') and msg.content:
             extracted = extract_model_names_from_text(msg.content)
             new_mentioned_models.extend(extracted)
+    
+    # NEW: Determine if we need memory or database
+    needs_memory = result.references_specific_turn or (result.references_previous_context and not final_models)
+    needs_database = bool(result.use_case or final_models or result.comparison_type)
+    
+    # NEW: If referencing specific turn, always need memory
+    if has_turn_ref:
+        needs_memory = True
+        result.references_specific_turn = True
+        result.referenced_turn_number = turn_number
     
     summary_parts = []
     if result.use_case:
@@ -285,7 +344,9 @@ Examples:
         "mentioned_models": new_mentioned_models if new_mentioned_models else None,
         "current_topic": result.use_case if result.use_case else state.get('current_topic'),
         "last_query_summary": " | ".join(summary_parts) if summary_parts else None,
-        "clarification_attempts": clarification_attempts
+        "clarification_attempts": clarification_attempts,
+        "needs_memory": needs_memory,  # NEW
+        "needs_database": needs_database  # NEW
     }
 
 
@@ -293,64 +354,90 @@ def context_retrieval_agent(state: AgentState) -> dict:
     execution_path = state.get('execution_path', [])
     execution_path.append('context_retrieval')
     
+    needs_memory = state.get('needs_memory', False)
+    needs_database = state.get('needs_database', True)
+    session_id = state.get('session_id', 'default_session')
+    turn_number = state.get('turn_number', 0)
+    user_query = state.get('user_query', '')
+    
     try:
         from core.vector_retriever import get_vector_retriever
         
         retriever = get_vector_retriever()
         
-        user_query = state.get('user_query', '')
-        use_case = state.get('use_case')
-        comparison_type = state.get('comparison_type')
-        models_requested = state.get('models_requested', [])
+        # === 1. CONDITIONALLY retrieve conversation memory ===
+        conversation_summaries = []
+        if needs_memory and turn_number > 0:
+            print(f"Retrieving conversation memory for session {session_id}")
+            
+            # Build filters for hybrid search
+            filters = {}
+            
+            # If specific turn referenced, filter by turn_number
+            referenced_turn = state.get('parsed_intent', {}).get('referenced_turn_number')
+            if referenced_turn:
+                filters["turn_number"] = {"$eq": referenced_turn}
+            
+            # Search conversation memory
+            conversation_summaries = retriever.search_conversation_memory(
+                query=user_query,
+                session_id=session_id,
+                filters=filters,
+                top_k=3
+            )
+            
+            print(f"Retrieved {len(conversation_summaries)} conversation summaries")
         
-        relevant_docs = retriever.search_with_context(
-            query=user_query,
-            use_case=use_case,
-            comparison_type=comparison_type,
-            n_results=5
-        )
+        # === 2. CONDITIONALLY retrieve domain knowledge ===
+        domain_docs = []
+        if needs_database:
+            print("Retrieving domain knowledge")
+            
+            use_case = state.get('use_case')
+            comparison_type = state.get('comparison_type')
+            
+            domain_docs = retriever.search_with_context(
+                query=user_query,
+                use_case=use_case,
+                comparison_type=comparison_type,
+                n_results=5,
+                namespace="domain_knowledge"
+            )
+            
+            print(f"Retrieved {len(domain_docs)} domain documents")
         
+        # === 3. Format context documents ===
         context_docs = []
-        for doc in relevant_docs:
+        
+        # Add conversation summaries FIRST (most relevant for follow-ups)
+        for summary in conversation_summaries:
+            context_docs.append({
+                'doc_id': f"turn_{summary['turn']}",
+                'category': 'conversation_memory',
+                'title': f"Turn {summary['turn']} Summary",
+                'content': summary['summary'],
+                'relevance_score': summary['relevance'],
+                'source': 'conversation_memory',
+                'turn_number': summary['turn'],
+                'models': summary.get('models', []),
+                'user_query': summary.get('user_query', '')
+            })
+        
+        # Add domain knowledge
+        for doc in domain_docs:
             context_docs.append({
                 'doc_id': doc['doc_id'],
                 'category': doc['metadata'].get('category', 'unknown'),
                 'title': doc['metadata'].get('title', 'Untitled'),
                 'content': doc['content'],
                 'relevance_score': 1.0 - doc['distance'],
-                'keywords': doc['metadata'].get('keywords', []),
-                'source': 'vector_db'
+                'source': 'domain_knowledge'
             })
-
-        personalized_context = state.get('personalized_business_context', '')
-        if personalized_context and personalized_context.strip():
-                    context_docs.insert(0, {
-                        'doc_id': 'PERSONALIZED_CONTEXT',
-                        'category': 'personalized',
-                        'title': 'User Personalized Business Context',
-                        'content': personalized_context.strip(),
-                        'relevance_score': 1.0,
-                        'keywords': ['personalized', 'user_context'],
-                        'source': 'user_input'
-                    })
-
-        print(f"Retrieved {len(context_docs)} relevant documents from vector DB")
-        for doc in context_docs[:3]:
-            print(f"  - {doc['title']} (relevance: {doc['relevance_score']:.3f})")
         
-        return {
-            "context_documents": context_docs,
-            "execution_path": execution_path
-        }
-    
-    except Exception as e:
-        print(f"Vector DB retrieval failed: {e}")
-        print("Falling back to empty context")
-
-        context_docs = []
+        # Add personalized context
         personalized_context = state.get('personalized_business_context', '')
         if personalized_context and personalized_context.strip():
-            context_docs.append({
+            context_docs.insert(0, {
                 'doc_id': 'PERSONALIZED_CONTEXT',
                 'category': 'personalized',
                 'title': 'User Personalized Business Context',
@@ -360,15 +447,26 @@ def context_retrieval_agent(state: AgentState) -> dict:
                 'source': 'user_input'
             })
         
-        context_docs = [{
-            'type': 'error',
-            'content': f'Vector DB retrieval failed: {str(e)}. Please run setup_vector_db.py to initialize the database.',
-            'source': 'fallback'
-        }]
+        print(f"Total context: {len(conversation_summaries)} memories + {len(domain_docs)} domain docs")
         
         return {
             "context_documents": context_docs,
+            "conversation_summaries": conversation_summaries,  # NEW
             "execution_path": execution_path
+        }
+    
+    except Exception as e:
+        print(f"Context retrieval failed: {e}")
+        import traceback
+        traceback.print_exc()
+        
+        # On failure, ask user for clarification
+        return {
+            "context_documents": [],
+            "conversation_summaries": [],
+            "execution_path": execution_path,
+            "needs_clarification": True,
+            "clarification_question": "I'm having trouble accessing conversation history. Could you provide more details about what you're asking?"
         }
 
 
@@ -1067,22 +1165,135 @@ def visualization_rendering_agent(state: AgentState) -> dict:
         "execution_path": execution_path
     }
 
+def generate_insight_summary(
+    full_insight: str,
+    analysis_results: dict,
+    user_query: str,
+    viz_specs: list,
+    state: dict
+) -> str:
+    """
+    Generate 300-token summary of the insight using LLM
+    """
+    summary_prompt = f"""You are an expert at creating concise, information-dense summaries for pharma analytics.
+
+Summarize this insight in EXACTLY 250-350 tokens.
+
+USER QUERY: {user_query}
+
+FULL INSIGHT:
+{full_insight}
+
+VISUALIZATIONS CREATED:
+{len(viz_specs)} charts
+
+REQUIREMENTS:
+1. What was analyzed (models, use case, data scope)
+2. Key quantitative results (winner, specific metrics, improvement %)
+3. Primary reason for results (one sentence WHY)
+4. Business recommendation or implication
+
+CRITICAL RULES:
+- Be self-contained (don't say "the analysis" - name entities explicitly)
+- Include specific numbers (RMSE=36, 10% improvement, etc.)
+- Use full model names (Random Forest, XGBoost, not abbreviations)
+- Dense prose, no bullet points
+- One flowing paragraph
+- 250-350 tokens ONLY
+
+GOOD EXAMPLE:
+"Compared Random Forest versus XGBoost for NRx prescription forecasting on 2024 Q3 data covering 10,000 HCPs. XGBoost achieved RMSE=36 (R²=0.77) versus Random Forest RMSE=40 (R²=0.72), representing 10% improvement. XGBoost's advantage stems from superior temporal trend capture through gradient boosting. Top features: patient_volume (0.32), HCP_specialty (0.28), call_frequency (0.19). Recommendation: Deploy XGBoost for production forecasting."
+
+Now generate the summary:
+"""
+    
+    summary_llm = ChatGoogleGenerativeAI(
+        model="gemini-2.5-flash",
+        api_key=os.getenv("gemini_api_key"),
+        temperature=0.3
+    )
+    
+    try:
+        response = summary_llm.invoke(summary_prompt)
+        summary = response.content.strip()
+        
+        # Basic validation
+        token_count = len(summary) // 4
+        if token_count < 200 or token_count > 400:
+            print(f"WARNING: Summary token count {token_count} outside target range")
+        
+        return summary
+    except Exception as e:
+        print(f"Summary generation failed: {e}")
+        # Fallback: truncate first 300 tokens of insight
+        return full_insight[:1200]  # Approximate 300 tokens
+
+
+def extract_insight_metadata(state: AgentState, analysis_results: dict, rendered_charts: list) -> dict:
+    """
+    Extract structured metadata from state and analysis results
+    """
+    metadata = {
+        # User query
+        "user_query": state.get('user_query', ''),
+        
+        # Entities
+        "models": state.get('models_requested', []),
+        "use_case": state.get('use_case', ''),
+        "comparison_type": state.get('comparison_type', ''),
+        "metrics": state.get('metrics_requested', []),
+        
+        # Results
+        "winner": '',
+        "primary_metric": '',
+        "improvement_pct": 0.0,
+        
+        # Content flags
+        "has_visualizations": len(rendered_charts) > 0,
+        "num_visualizations": len(rendered_charts),
+        "has_drift_analysis": False,
+        "has_feature_importance": False,
+        "has_recommendations": False,
+    }
+    
+    # Try to extract winner and primary metric from analysis
+    computed_metrics = analysis_results.get('computed_metrics', {})
+    if computed_metrics:
+        # Find primary metric
+        for metric_name in ['rmse', 'mae', 'r2', 'auc_roc', 'accuracy']:
+            if metric_name in computed_metrics:
+                metadata['primary_metric'] = metric_name
+                break
+    
+    # Check patterns for content flags
+    patterns = analysis_results.get('patterns', [])
+    if patterns:
+        patterns_text = ' '.join(patterns).lower()
+        metadata['has_drift_analysis'] = 'drift' in patterns_text
+        metadata['has_feature_importance'] = 'feature' in patterns_text or 'importance' in patterns_text
+        metadata['has_recommendations'] = 'recommend' in patterns_text
+    
+    return metadata
 
 def insight_generation_agent(state: AgentState) -> dict:
     execution_path = state.get('execution_path', [])
     execution_path.append('insight_generation')
     
     analysis_results = state.get('analysis_results', {})
-    context_docs = state.get('context_documents', [])
+    context_docs = state.get('context_documents')
+    if not context_docs:
+        context_docs = []
     comparison_type = state.get('comparison_type')
     rendered_charts = state.get('rendered_charts', [])
     viz_strategy = state.get('viz_strategy')
     viz_reasoning = state.get('viz_reasoning')
     viz_warnings = state.get('viz_warnings', [])
-
-    personalized_context_section = get_personalized_context_section(state)
-
+    conversation_summaries = state.get('conversation_summaries', [])
+    needs_database = state.get('needs_database', True)
     
+    personalized_context_section = get_personalized_context_section(state)
+    
+    # Build context with conversation summaries
     viz_context = ""
     if rendered_charts:
         viz_descriptions = []
@@ -1100,12 +1311,47 @@ def insight_generation_agent(state: AgentState) -> dict:
 
 {chr(10).join(viz_descriptions)}
 
-Reference these charts naturally in your explanation (e.g., "As shown in Chart 1...", "The visualization illustrates...").
+Reference these charts naturally in your explanation.
 """
     
     if viz_warnings:
         viz_context += f"\n\n⚠️ **Visualization Notes:**\n" + "\n".join(f"- {w}" for w in viz_warnings)
     
+    conversation_context = ""
+    if conversation_summaries:
+        conversation_context = "\n\n**Previous Conversation Context:**\n"
+        for summary in conversation_summaries:
+            conversation_context += f"\nTurn {summary['turn']}: {summary['summary'][:200]}...\n"
+    
+    # Handle memory-only queries (no database)
+    if not needs_database and conversation_summaries:
+        # Answer from memory only
+        prompt = f"""Answer the user's question using conversation history.
+
+User Query: {state['user_query']}
+
+{conversation_context}
+
+Instructions:
+- Answer directly from conversation history
+- Reference specific turns when relevant
+- If information isn't in summaries, mention that you can fetch more details
+- Be specific and factual
+
+Generate your response:
+"""
+        
+        response = llm.invoke(prompt)
+        
+        # Don't store summary for memory-only queries (no new insight generated)
+        return {
+            "messages": [AIMessage(content=response.content)],
+            "final_insights": response.content,
+            "execution_path": execution_path,
+            "summary_generated": False
+        }
+    
+    # Normal database query - generate full insight
     prompt = f"""Generate a clear, business-focused explanation of the analysis results.
 
 Query: {state['user_query']}
@@ -1115,29 +1361,78 @@ Analysis Results:
 {json.dumps(analysis_results, indent=2, default=str)}
 
 Context:
-{json.dumps(context_docs[:3], indent=2, default=str)}
+{json.dumps([d for d in context_docs if d['source'] == 'domain_knowledge'][:3], indent=2, default=str)}
+{conversation_context}
 {viz_context}
 {personalized_context_section}
 
 **Instructions:**
 1. Direct answer to the user's question
 2. Key quantitative findings (cite specific numbers)
-3. Reference the charts naturally (e.g., "Chart 1 shows that...", "As visualized above...")
-4. Explain WHY these results occurred (contextual reasoning)
+3. Reference charts naturally if present
+4. Explain WHY these results occurred
 5. Business implications for pharma commercial analytics
 6. Actionable recommendations if applicable
 
-Keep language clear and avoid jargon. Structure your response to flow with the visualizations.
+Keep language clear and avoid jargon.
 """
     
     response = llm.invoke(prompt)
+    full_insight = response.content
+    
+    # === STORE IN MEMORY ===
+    session_id = state.get('session_id', 'default_session')
+    turn_number = state.get('turn_number', 1)
+    
+    try:
+        # Generate summary
+        print(f"Generating summary for turn {turn_number}...")
+        summary_text = generate_insight_summary(
+            full_insight=full_insight,
+            analysis_results=analysis_results,
+            user_query=state['user_query'],
+            viz_specs=rendered_charts,
+            state=state
+        )
+        
+        # Extract metadata
+        metadata = extract_insight_metadata(
+            state=state,
+            analysis_results=analysis_results,
+            rendered_charts=rendered_charts
+        )
+        
+        # Store in Pinecone
+        from core.memory_manager import get_memory_manager
+        memory_manager = get_memory_manager()
+        
+        success = memory_manager.store_insight(
+            session_id=session_id,
+            turn_number=turn_number,
+            summary=summary_text,
+            full_insight=full_insight,
+            metadata=metadata
+        )
+        
+        if success:
+            print(f"✓ Stored turn {turn_number} in conversation memory")
+        else:
+            print(f"✗ Failed to store turn {turn_number}, continuing anyway")
+        
+    except Exception as e:
+        print(f"Memory storage failed (non-critical): {e}")
+        # Continue anyway - memory storage is not critical
+    
     extracted_models = extract_model_names_from_text(response.content)
+    
     return {
         "messages": [AIMessage(content=response.content)],
         "final_insights": response.content,
         "rendered_charts": rendered_charts,
         "execution_path": execution_path,
-        "mentioned_models": extracted_models if extracted_models else None
+        "mentioned_models": extracted_models if extracted_models else None,
+        "summary_generated": True,
+        "last_query_summary": state.get('last_query_summary')  # Preserve for next turn
     }
 
 
@@ -1145,12 +1440,14 @@ def orchestrator_agent(state: AgentState) -> dict:
     needs_clarification = state.get('needs_clarification', False)
     loop_count = state.get('loop_count', 0)
     clarification_attempts = state.get('clarification_attempts', 0)
+    needs_memory = state.get('needs_memory', False)
+    needs_database = state.get('needs_database', True)
     
     execution_path = state.get('execution_path', [])
     execution_path.append('orchestrator')
 
     if clarification_attempts >= 3:
-        print(f"DEBUG: Max clarification attempts reached ({clarification_attempts}), proceeding anyway")
+        print(f"Max clarification attempts reached, proceeding")
         needs_clarification = False
     
     if loop_count > 16:
@@ -1161,7 +1458,7 @@ def orchestrator_agent(state: AgentState) -> dict:
         }
     
     if needs_clarification:
-        clarification = state.get('clarification_question' or "Could you please provide more details?")
+        clarification = state.get('clarification_question', "Could you please provide more details?")
         return {
             "next_action": "ask_clarification",
             "execution_path": execution_path,
@@ -1169,20 +1466,27 @@ def orchestrator_agent(state: AgentState) -> dict:
             "messages": [AIMessage(content=clarification)]
         }
     
-    use_case = state.get('use_case')
-    models_requested = state.get('models_requested')
-    
-    if not use_case and not models_requested:
+    # Route based on memory and database needs
+    if needs_memory:
+        # Need to retrieve conversation history
+        return {
+            "next_action": "retrieve_memory",
+            "execution_path": execution_path,
+            "loop_count": loop_count + 1
+        }
+    elif needs_database:
+        # Skip memory, go straight to SQL
+        return {
+            "next_action": "skip_to_sql",
+            "execution_path": execution_path,
+            "loop_count": loop_count + 1
+        }
+    else:
+        # Ambiguous query
         return {
             "next_action": "ask_clarification",
             "execution_path": execution_path,
             "needs_clarification": True,
-            "clarification_question": "I need more information. Which use case or models are you interested in?",
-            "messages": [AIMessage(content="I need more information. Which use case or models are you interested in?")]
+            "clarification_question": "I need more information. What would you like to know?",
+            "messages": [AIMessage(content="I need more information. What would you like to know?")]
         }
-    
-    return {
-        "next_action": "retrieve_data",
-        "execution_path": execution_path,
-        "loop_count": loop_count + 1
-    }

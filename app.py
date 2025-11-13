@@ -9,6 +9,8 @@ import plotly.graph_objects as go
 from datetime import datetime
 import pandas as pd
 import time
+from core.session_cleanup import cleanup_old_sessions
+import uuid
 
 load_dotenv()
 
@@ -195,6 +197,15 @@ def initialize_session_state():
     if 'context_last_updated' not in st.session_state:
         st.session_state.context_last_updated = None
     
+    # NEW: Session ID generation
+    if 'session_id' not in st.session_state:
+        st.session_state.session_id = f"session_{uuid.uuid4().hex[:12]}"
+        print(f"✓ New session created: {st.session_state.session_id}")
+    
+    # NEW: Turn counter
+    if 'turn_number' not in st.session_state:
+        st.session_state.turn_number = 0
+    
     if 'conversation_state' not in st.session_state:
         st.session_state.conversation_state = {
             "messages": [],
@@ -211,6 +222,9 @@ def initialize_session_state():
             "generated_sql": None,
             "sql_purpose": None,
             "expected_columns": None,
+            "sql_retry_count": 0,
+            "needs_sql_retry": False,
+            "sql_error_feedback": None,
             "retrieved_data": None,
             "tool_calls": None,
             "analysis_results": None,
@@ -230,7 +244,15 @@ def initialize_session_state():
             "viz_strategy": None,
             "viz_reasoning": None,
             "viz_warnings": None,
-            "personalized_business_context": ""  # Add to conversation state
+            "clarification_attempts": 0,
+            "personalized_business_context": "",
+            # NEW: Memory fields
+            "session_id": st.session_state.session_id,
+            "turn_number": 0,
+            "needs_memory": False,
+            "needs_database": True,
+            "conversation_summaries": None,
+            "summary_generated": False
         }
     
     if 'db_initialized' not in st.session_state:
@@ -240,6 +262,23 @@ def initialize_session_state():
         except Exception as e:
             st.session_state.db_initialized = False
             st.session_state.db_error = str(e)
+    
+    # NEW: Run cleanup on first initialization
+    if 'cleanup_done' not in st.session_state:
+        try:
+            print("Running session cleanup (30+ days old)...")
+            result = cleanup_old_sessions(days_old=30)
+            
+            if result['success']:
+                print(f"✓ Cleanup complete: {result['sessions_deleted']} sessions deleted")
+            else:
+                print(f"⚠ Cleanup failed: {result.get('error')}")
+            
+            st.session_state.cleanup_done = True
+        except Exception as e:
+            print(f"⚠ Cleanup error (non-critical): {e}")
+            st.session_state.cleanup_done = True
+
 
 
 def initialize_log_dataframe():
@@ -412,9 +451,14 @@ def extract_final_insights(final_state, all_messages):
 def process_query(user_input):
     start_time = time.time()
     
+    # Increment turn number
+    st.session_state.turn_number += 1
+    
     # Add personalized context to conversation state
     st.session_state.conversation_state["user_query"] = user_input
     st.session_state.conversation_state["personalized_business_context"] = st.session_state.personalized_context
+    st.session_state.conversation_state["session_id"] = st.session_state.session_id
+    st.session_state.conversation_state["turn_number"] = st.session_state.turn_number
     st.session_state.conversation_state["execution_path"] = []
     st.session_state.conversation_state["rendered_charts"] = None
     st.session_state.conversation_state["visualization_specs"] = None
@@ -453,6 +497,8 @@ def process_query(user_input):
             viz_strategy = final_state.get('viz_strategy')
             viz_reasoning = final_state.get('viz_reasoning')
             viz_warnings = final_state.get('viz_warnings', [])
+            
+            print(f"Turn {st.session_state.turn_number}: {len(rendered_charts)} charts")
 
             assistant_response = {
                 'type': 'assistant',
@@ -516,6 +562,8 @@ def process_query(user_input):
         }
 
 
+
+
 def main():
     initialize_session_state()
     initialize_log_dataframe()
@@ -577,6 +625,7 @@ def main():
         """)
 
     # Main content area
+    # Main content area
     st.markdown("""
     <div class="app-header">
         <div class="app-title">🏥 Pharma Analytics Assistant</div>
@@ -585,7 +634,7 @@ def main():
     """, unsafe_allow_html=True)
     
     # Status badges
-    status_col1, status_col2 = st.columns([1, 2])
+    status_col1, status_col2, status_col3 = st.columns([1, 2, 1])  # Changed to 3 columns
     with status_col1:
         if st.session_state.db_initialized:
             st.markdown('<div class="status-badge">● Database Connected</div>', unsafe_allow_html=True)
@@ -597,7 +646,9 @@ def main():
             context_preview = st.session_state.personalized_context[:50] + "..." if len(st.session_state.personalized_context) > 50 else st.session_state.personalized_context
             st.markdown(f'<div class="context-badge">📝 Custom Context Active: {len(st.session_state.personalized_context)} chars</div>', unsafe_allow_html=True)
     
-    st.markdown('<div class="section-header">💬 Conversation</div>', unsafe_allow_html=True)
+    # NEW: Display session info
+    with status_col3:
+        st.markdown(f'<div class="status-badge">📝 Session: {st.session_state.session_id[:12]}... | Turn: {st.session_state.turn_number}</div>', unsafe_allow_html=True)
     
     if not st.session_state.chat_history:
         welcome_message = """
@@ -657,19 +708,28 @@ def main():
         with col_clear:
             if st.button("🗑️ Clear Chat", use_container_width=True):
                 st.session_state.chat_history = []
+                st.session_state.turn_number = 0  # NEW: Reset turn counter
                 st.session_state.conversation_state = {
                     "messages": [], "user_query": None, "parsed_intent": None, "use_case": None,
                     "models_requested": None, "comparison_type": None, "time_range": None,
                     "metrics_requested": None, "entities_requested": None, "requires_visualization": False,
                     "context_documents": None, "generated_sql": None, "sql_purpose": None,
-                    "expected_columns": None, "retrieved_data": None, "tool_calls": None,
+                    "expected_columns": None, "sql_retry_count": 0, "needs_sql_retry": False,
+                    "sql_error_feedback": None, "retrieved_data": None, "tool_calls": None,
                     "analysis_results": None, "visualization_specs": None, "rendered_charts": None,
                     "final_insights": None, "needs_clarification": False, "clarification_question": None,
                     "loop_count": 0, "next_action": None, "execution_path": [],
                     "conversation_context": {}, "mentioned_models": [], "mentioned_model_ids": [],
                     "last_query_summary": None, "current_topic": None, "viz_strategy": None,
-                    "viz_reasoning": None, "viz_warnings": None,
-                    "personalized_business_context": st.session_state.personalized_context
+                    "viz_reasoning": None, "viz_warnings": None, "clarification_attempts": 0,
+                    "personalized_business_context": st.session_state.personalized_context,
+                    # NEW: Memory fields
+                    "session_id": st.session_state.session_id,
+                    "turn_number": 0,
+                    "needs_memory": False,
+                    "needs_database": True,
+                    "conversation_summaries": None,
+                    "summary_generated": False
                 }
                 st.rerun()
 
