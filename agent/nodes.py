@@ -668,7 +668,7 @@ def data_retrieval_agent(state: AgentState) -> dict:
     
     if row_count == 0 and retry_count < 3:
         # Need to retry - send back to SQL generation
-        print(f"⚠️ Query returned 0 rows. Initiating retry {retry_count + 1}/3")
+        print(f" Query returned 0 rows. Initiating retry {retry_count + 1}/3")
         updated_state.update({
             "needs_sql_retry": True,
             "sql_retry_count": retry_count + 1,
