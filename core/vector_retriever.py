@@ -6,7 +6,7 @@ Used by context_retrieval_agent to fetch relevant documents.
 import os
 from pinecone import Pinecone
 from sentence_transformers import SentenceTransformer
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -255,30 +255,55 @@ class PineconeRetriever:
         self,
         query: str,
         session_id: str,
+        current_turn: int,
         filters: Optional[Dict] = None,
         top_k: int = 3
-    ) -> List[Dict[str, Any]]:
+    ) -> Tuple[List[Dict], bool, str]:
         """
-        Search conversation memory with hybrid filtering
+        Progressive lazy search for conversation memory
         
         Args:
             query: Search query
             session_id: Session ID to search within
-            filters: Optional Pinecone filters
-            top_k: Number of results
+            current_turn: Current turn number
+            filters: Optional Pinecone filters (for specific turn lookup)
+            top_k: Number of results (used for recent turns limit)
             
         Returns:
-            List of summary dicts
+            (chunks_found, needs_clarification, clarification_message)
         """
         from core.memory_manager import get_memory_manager
         memory_manager = get_memory_manager()
         
-        return memory_manager.search_summaries(
+        # If specific turn filter provided, use direct lookup
+        if filters and 'turn_number' in filters:
+            target_turn = filters['turn_number'].get('$eq')
+            if target_turn:
+                result = memory_manager.get_full_turn(session_id, target_turn)
+                if result['success']:
+                    return [{
+                        'turn': target_turn,
+                        'user_query': result['user_query'],
+                        'insight_chunk': result['full_insight'],
+                        'relevance': 1.0,
+                        'timestamp': result['timestamp'],
+                        'is_partial': False
+                    }], False, ""
+                else:
+                    return [], True, f"Turn {target_turn} not found. Please check the turn number."
+        
+        # Otherwise use progressive lazy search
+        chunks, needs_full, clarification = memory_manager.lazy_search_conversation_memory(
             query=query,
             session_id=session_id,
-            filters=filters,
-            top_k=top_k
+            current_turn=current_turn,
+            max_recent_turns=top_k  # Use top_k as recent turns limit
         )
+        
+        if clarification:
+            return chunks, True, clarification
+        
+        return chunks, False, ""
     
     def get_statistics(self) -> Dict[str, Any]:
         """Get index statistics"""

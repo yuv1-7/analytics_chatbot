@@ -2,6 +2,7 @@ import os
 import json
 import re
 from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, SystemMessage, AIMessage, ToolMessage
 from pydantic import BaseModel, Field
 from typing import Optional, List, Dict, Any
@@ -13,9 +14,10 @@ import plotly.graph_objects as go
 import pandas as pd
 import numpy as np
 
-llm = ChatGoogleGenerativeAI(
-    model='gemini-2.5-flash',
-    api_key=os.getenv("gemini_api_key"),
+llm = ChatOpenAI(
+    model='gpt-4.1-nano',
+    api_key=os.getenv("gpt_api_key"),
+    stream_usage=True,
     temperature=0.7
 )
 
@@ -258,7 +260,7 @@ Examples:
 - "Why did XGBoost perform better?" (with recent context) → references_previous_context=True, models from context
 """
     
-    structured_llm = llm.with_structured_output(ParsedIntent)
+    structured_llm = llm.with_structured_output(ParsedIntent, method="function_calling")
     
     context_messages = [SystemMessage(content=system_msg)]
     
@@ -365,33 +367,48 @@ def context_retrieval_agent(state: AgentState) -> dict:
         
         retriever = get_vector_retriever()
         
-        # === 1. CONDITIONALLY retrieve conversation memory ===
-        conversation_summaries = []
+        # === 1. CONDITIONALLY retrieve conversation memory (LAZY) ===
+        conversation_chunks = []
+        needs_clarification = False
+        clarification_question = ""
+        
         if needs_memory and turn_number > 0:
-            print(f"Retrieving conversation memory for session {session_id}")
+            print(f"[Memory] Lazy search for session {session_id}, turn {turn_number}")
             
-            # Build filters for hybrid search
+            # Build filters for specific turn lookup
             filters = {}
-            
-            # If specific turn referenced, filter by turn_number
             referenced_turn = state.get('parsed_intent', {}).get('referenced_turn_number')
             if referenced_turn:
                 filters["turn_number"] = {"$eq": referenced_turn}
             
-            # Search conversation memory
-            conversation_summaries = retriever.search_conversation_memory(
+            # Use lazy search
+            chunks, needs_clarify, clarify_msg = retriever.search_conversation_memory(
                 query=user_query,
                 session_id=session_id,
-                filters=filters,
-                top_k=3
+                current_turn=turn_number,
+                filters=filters if filters else None,
+                top_k=3  # Last 3 turns
             )
             
-            print(f"Retrieved {len(conversation_summaries)} conversation summaries")
+            conversation_chunks = chunks
+            needs_clarification = needs_clarify
+            clarification_question = clarify_msg
+            
+            if needs_clarification:
+                print(f"[Memory] ⚠ Clarification needed: {clarification_question}")
+            elif conversation_chunks:
+                print(f"[Memory] ✓ Retrieved {len(conversation_chunks)} chunks")
+                # Log what we got
+                for chunk in conversation_chunks:
+                    chunk_type = "full insight" if not chunk.get('is_partial') else "partial chunk"
+                    print(f"  - Turn {chunk['turn']}: {chunk_type} (relevance: {chunk['relevance']:.2f})")
+            else:
+                print(f"[Memory] No relevant memory found")
         
         # === 2. CONDITIONALLY retrieve domain knowledge ===
         domain_docs = []
         if needs_database:
-            print("Retrieving domain knowledge")
+            print("[Domain] Retrieving domain knowledge")
             
             use_case = state.get('use_case')
             comparison_type = state.get('comparison_type')
@@ -404,23 +421,25 @@ def context_retrieval_agent(state: AgentState) -> dict:
                 namespace="domain_knowledge"
             )
             
-            print(f"Retrieved {len(domain_docs)} domain documents")
+            print(f"[Domain] Retrieved {len(domain_docs)} documents")
         
         # === 3. Format context documents ===
         context_docs = []
         
-        # Add conversation summaries FIRST (most relevant for follow-ups)
-        for summary in conversation_summaries:
+        # Add conversation chunks FIRST (most relevant for follow-ups)
+        for chunk in conversation_chunks:
+            chunk_label = "Full Insight" if not chunk.get('is_partial') else f"Chunk {chunk.get('chunk_index', 0)+1}/{chunk.get('total_chunks', 1)}"
+            
             context_docs.append({
-                'doc_id': f"turn_{summary['turn']}",
+                'doc_id': f"turn_{chunk['turn']}_{chunk.get('chunk_index', 0)}",
                 'category': 'conversation_memory',
-                'title': f"Turn {summary['turn']} Summary",
-                'content': summary['summary'],
-                'relevance_score': summary['relevance'],
+                'title': f"Turn {chunk['turn']} - {chunk_label}",
+                'content': chunk['insight_chunk'],
+                'relevance_score': chunk['relevance'],
                 'source': 'conversation_memory',
-                'turn_number': summary['turn'],
-                'models': summary.get('models', []),
-                'user_query': summary.get('user_query', '')
+                'turn_number': chunk['turn'],
+                'user_query': chunk.get('user_query', ''),
+                'is_partial': chunk.get('is_partial', True)
             })
         
         # Add domain knowledge
@@ -447,11 +466,21 @@ def context_retrieval_agent(state: AgentState) -> dict:
                 'source': 'user_input'
             })
         
-        print(f"Total context: {len(conversation_summaries)} memories + {len(domain_docs)} domain docs")
+        print(f"[Context] Total: {len(conversation_chunks)} memory + {len(domain_docs)} domain docs")
+        
+        # If clarification needed, set flag
+        if needs_clarification:
+            return {
+                "context_documents": context_docs,
+                "conversation_summaries": conversation_chunks,
+                "execution_path": execution_path,
+                "needs_clarification": True,
+                "clarification_question": clarification_question
+            }
         
         return {
             "context_documents": context_docs,
-            "conversation_summaries": conversation_summaries,  # NEW
+            "conversation_summaries": conversation_chunks,
             "execution_path": execution_path
         }
     
@@ -466,9 +495,8 @@ def context_retrieval_agent(state: AgentState) -> dict:
             "conversation_summaries": [],
             "execution_path": execution_path,
             "needs_clarification": True,
-            "clarification_question": "I'm having trouble accessing conversation history. Could you provide more details about what you're asking?"
+            "clarification_question": "I'm having trouble accessing conversation history. Could you provide more details or specify which turn you're referring to?"
         }
-
 
 def sql_generation_agent(state: AgentState) -> dict:
     execution_path = state.get('execution_path', [])
@@ -585,7 +613,7 @@ LIMIT 50;
 """
 
     try:
-        structured_llm = llm.with_structured_output(SQLQuerySpec)
+        structured_llm = llm.with_structured_output(SQLQuerySpec, method="function_calling")
         result = structured_llm.invoke(prompt)
         
         return {
@@ -758,7 +786,7 @@ Output as JSON with keys: computed_metrics (dict), patterns (list), anomalies (l
 Focus on actionable insights relevant to pharma commercial analytics."""
 
     try:
-        structured_llm = llm.with_structured_output(AnalysisOutput)
+        structured_llm = llm.with_structured_output(AnalysisOutput, method="function_calling")
         analysis = structured_llm.invoke(analysis_prompt)
         
         analysis_results = {
@@ -996,7 +1024,7 @@ Return valid JSON only.
 """
     
     try:
-        structured_llm = llm.with_structured_output(VizSpecOutput)
+        structured_llm = llm.with_structured_output(VizSpecOutput, method="function_calling")
         viz_spec = structured_llm.invoke(prompt)
         
         validation_issues = validate_viz_spec(viz_spec, df)
@@ -1165,116 +1193,6 @@ def visualization_rendering_agent(state: AgentState) -> dict:
         "execution_path": execution_path
     }
 
-def generate_insight_summary(
-    full_insight: str,
-    analysis_results: dict,
-    user_query: str,
-    viz_specs: list,
-    state: dict
-) -> str:
-    """
-    Generate 300-token summary of the insight using LLM
-    """
-    summary_prompt = f"""You are an expert at creating concise, information-dense summaries for pharma analytics.
-
-Summarize this insight in EXACTLY 250-350 tokens.
-
-USER QUERY: {user_query}
-
-FULL INSIGHT:
-{full_insight}
-
-VISUALIZATIONS CREATED:
-{len(viz_specs)} charts
-
-REQUIREMENTS:
-1. What was analyzed (models, use case, data scope)
-2. Key quantitative results (winner, specific metrics, improvement %)
-3. Primary reason for results (one sentence WHY)
-4. Business recommendation or implication
-
-CRITICAL RULES:
-- Be self-contained (don't say "the analysis" - name entities explicitly)
-- Include specific numbers (RMSE=36, 10% improvement, etc.)
-- Use full model names (Random Forest, XGBoost, not abbreviations)
-- Dense prose, no bullet points
-- One flowing paragraph
-- 250-350 tokens ONLY
-
-GOOD EXAMPLE:
-"Compared Random Forest versus XGBoost for NRx prescription forecasting on 2024 Q3 data covering 10,000 HCPs. XGBoost achieved RMSE=36 (R²=0.77) versus Random Forest RMSE=40 (R²=0.72), representing 10% improvement. XGBoost's advantage stems from superior temporal trend capture through gradient boosting. Top features: patient_volume (0.32), HCP_specialty (0.28), call_frequency (0.19). Recommendation: Deploy XGBoost for production forecasting."
-
-Now generate the summary:
-"""
-    
-    summary_llm = ChatGoogleGenerativeAI(
-        model="gemini-2.5-flash",
-        api_key=os.getenv("gemini_api_key"),
-        temperature=0.3
-    )
-    
-    try:
-        response = summary_llm.invoke(summary_prompt)
-        summary = response.content.strip()
-        
-        # Basic validation
-        token_count = len(summary) // 4
-        if token_count < 200 or token_count > 400:
-            print(f"WARNING: Summary token count {token_count} outside target range")
-        
-        return summary
-    except Exception as e:
-        print(f"Summary generation failed: {e}")
-        # Fallback: truncate first 300 tokens of insight
-        return full_insight[:1200]  # Approximate 300 tokens
-
-
-def extract_insight_metadata(state: AgentState, analysis_results: dict, rendered_charts: list) -> dict:
-    """
-    Extract structured metadata from state and analysis results
-    """
-    metadata = {
-        # User query
-        "user_query": state.get('user_query', ''),
-        
-        # Entities
-        "models": state.get('models_requested', []),
-        "use_case": state.get('use_case', ''),
-        "comparison_type": state.get('comparison_type', ''),
-        "metrics": state.get('metrics_requested', []),
-        
-        # Results
-        "winner": '',
-        "primary_metric": '',
-        "improvement_pct": 0.0,
-        
-        # Content flags
-        "has_visualizations": len(rendered_charts) > 0,
-        "num_visualizations": len(rendered_charts),
-        "has_drift_analysis": False,
-        "has_feature_importance": False,
-        "has_recommendations": False,
-    }
-    
-    # Try to extract winner and primary metric from analysis
-    computed_metrics = analysis_results.get('computed_metrics', {})
-    if computed_metrics:
-        # Find primary metric
-        for metric_name in ['rmse', 'mae', 'r2', 'auc_roc', 'accuracy']:
-            if metric_name in computed_metrics:
-                metadata['primary_metric'] = metric_name
-                break
-    
-    # Check patterns for content flags
-    patterns = analysis_results.get('patterns', [])
-    if patterns:
-        patterns_text = ' '.join(patterns).lower()
-        metadata['has_drift_analysis'] = 'drift' in patterns_text
-        metadata['has_feature_importance'] = 'feature' in patterns_text or 'importance' in patterns_text
-        metadata['has_recommendations'] = 'recommend' in patterns_text
-    
-    return metadata
-
 def insight_generation_agent(state: AgentState) -> dict:
     execution_path = state.get('execution_path', [])
     execution_path.append('insight_generation')
@@ -1321,7 +1239,9 @@ Reference these charts naturally in your explanation.
     if conversation_summaries:
         conversation_context = "\n\n**Previous Conversation Context:**\n"
         for summary in conversation_summaries:
-            conversation_context += f"\nTurn {summary['turn']}: {summary['summary'][:200]}...\n"
+            # Changed from 'summary' to 'insight_chunk'
+            chunk_preview = summary.get('insight_chunk', '')[:300] + "..."
+            conversation_context += f"\nTurn {summary['turn']}: {chunk_preview}\n"
     
     # Handle memory-only queries (no database)
     if not needs_database and conversation_summaries:
@@ -1338,17 +1258,16 @@ Instructions:
 - If information isn't in summaries, mention that you can fetch more details
 - Be specific and factual
 
-Generate your response:
+Generate your response.
 """
         
         response = llm.invoke(prompt)
         
-        # Don't store summary for memory-only queries (no new insight generated)
+        # Don't store memory-only queries (no new insight generated)
         return {
             "messages": [AIMessage(content=response.content)],
             "final_insights": response.content,
-            "execution_path": execution_path,
-            "summary_generated": False
+            "execution_path": execution_path
         }
     
     # Normal database query - generate full insight
@@ -1374,44 +1293,30 @@ Context:
 5. Business implications for pharma commercial analytics
 6. Actionable recommendations if applicable
 
-Keep language clear and avoid jargon.
+Keep language clear and avoid jargon. Provide a clear well structured and section answer. 
+You can use headings and points to make a user friedly insight.
 """
     
     response = llm.invoke(prompt)
     full_insight = response.content
     
-    # === STORE IN MEMORY ===
+    # === STORE IN MEMORY (SIMPLIFIED) ===
     session_id = state.get('session_id', 'default_session')
     turn_number = state.get('turn_number', 1)
+    user_query = state.get('user_query', '')
     
     try:
-        # Generate summary
-        print(f"Generating summary for turn {turn_number}...")
-        summary_text = generate_insight_summary(
-            full_insight=full_insight,
-            analysis_results=analysis_results,
-            user_query=state['user_query'],
-            viz_specs=rendered_charts,
-            state=state
-        )
+        print(f"Storing turn {turn_number} in conversation memory...")
         
-        # Extract metadata
-        metadata = extract_insight_metadata(
-            state=state,
-            analysis_results=analysis_results,
-            rendered_charts=rendered_charts
-        )
-        
-        # Store in Pinecone
         from core.memory_manager import get_memory_manager
         memory_manager = get_memory_manager()
         
+        # Simple storage: just the insight text + query
         success = memory_manager.store_insight(
             session_id=session_id,
             turn_number=turn_number,
-            summary=summary_text,
-            full_insight=full_insight,
-            metadata=metadata
+            user_query=user_query,
+            insight_text=full_insight
         )
         
         if success:
@@ -1431,10 +1336,8 @@ Keep language clear and avoid jargon.
         "rendered_charts": rendered_charts,
         "execution_path": execution_path,
         "mentioned_models": extracted_models if extracted_models else None,
-        "summary_generated": True,
         "last_query_summary": state.get('last_query_summary')  # Preserve for next turn
     }
-
 
 def orchestrator_agent(state: AgentState) -> dict:
     needs_clarification = state.get('needs_clarification', False)
