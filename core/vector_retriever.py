@@ -52,7 +52,8 @@ class PineconeRetriever:
         query: str,
         n_results: int = 5,
         category_filter: Optional[str] = None,
-        filter_dict: Optional[Dict[str, Any]] = None
+        filter_dict: Optional[Dict[str, Any]] = None,
+        namespace: str = "domain_knowledge"
     ) -> List[Dict[str, Any]]:
         """
         Semantic search for relevant documents
@@ -62,6 +63,7 @@ class PineconeRetriever:
             n_results: Number of results to return
             category_filter: Optional category to filter by
             filter_dict: Optional Pinecone filter dictionary
+            namespace: Namespace to search in
         
         Returns:
             List of document dictionaries with content and metadata
@@ -79,7 +81,8 @@ class PineconeRetriever:
             vector=query_embedding,
             top_k=n_results,
             include_metadata=True,
-            filter=filter_clause if filter_clause else None
+            filter=filter_clause if filter_clause else None,
+            namespace=namespace
         )
         
         # Format results
@@ -100,7 +103,8 @@ class PineconeRetriever:
         self,
         query: str,
         category: str,
-        n_results: int = 3
+        n_results: int = 3,
+        namespace: str = "domain_knowledge"
     ) -> List[Dict[str, Any]]:
         """
         Search within a specific category
@@ -109,17 +113,19 @@ class PineconeRetriever:
             query: Search query
             category: Category to search in
             n_results: Number of results
+            namespace: Namespace to search
         
         Returns:
             List of matching documents
         """
-        return self.search(query, n_results=n_results, category_filter=category)
+        return self.search(query, n_results=n_results, category_filter=category, namespace=namespace)
     
     def search_multi_category(
         self,
         query: str,
         categories: List[str],
-        n_results_per_category: int = 2
+        n_results_per_category: int = 2,
+        namespace: str = "domain_knowledge"
     ) -> Dict[str, List[Dict[str, Any]]]:
         """
         Search across multiple categories
@@ -128,6 +134,7 @@ class PineconeRetriever:
             query: Search query
             categories: List of categories to search
             n_results_per_category: Results per category
+            namespace: Namespace to search
         
         Returns:
             Dictionary mapping category to results
@@ -135,22 +142,23 @@ class PineconeRetriever:
         results = {}
         for category in categories:
             results[category] = self.search_by_category(
-                query, category, n_results=n_results_per_category
+                query, category, n_results=n_results_per_category, namespace=namespace
             )
         return results
     
-    def get_by_id(self, doc_id: str) -> Optional[Dict[str, Any]]:
+    def get_by_id(self, doc_id: str, namespace: str = "domain_knowledge") -> Optional[Dict[str, Any]]:
         """
         Retrieve a specific document by ID
         
         Args:
             doc_id: Document identifier
+            namespace: Namespace to fetch from
         
         Returns:
             Document dict or None
         """
         try:
-            result = self.index.fetch(ids=[doc_id])
+            result = self.index.fetch(ids=[doc_id], namespace=namespace)
             
             if not result['vectors'] or doc_id not in result['vectors']:
                 return None
@@ -189,7 +197,8 @@ class PineconeRetriever:
         query: str,
         use_case: Optional[str] = None,
         comparison_type: Optional[str] = None,
-        n_results: int = 5
+        n_results: int = 5,
+        namespace: str = "domain_knowledge"
     ) -> List[Dict[str, Any]]:
         """
         Context-aware search based on parsed query intent
@@ -199,6 +208,7 @@ class PineconeRetriever:
             use_case: Detected use case
             comparison_type: Type of comparison requested
             n_results: Number of results
+            namespace: Namespace to search
         
         Returns:
             List of relevant documents
@@ -225,7 +235,7 @@ class PineconeRetriever:
         
         if not categories_to_search:
             # Default broad search
-            return self.search(query, n_results=n_results)
+            return self.search(query, n_results=n_results, namespace=namespace)
         
         # Search across prioritized categories
         all_results = []
@@ -233,13 +243,42 @@ class PineconeRetriever:
         
         for category in categories_to_search:
             category_results = self.search_by_category(
-                query, category, n_results=results_per_category
+                query, category, n_results=results_per_category, namespace=namespace
             )
             all_results.extend(category_results)
         
         # Sort by score (higher is better in Pinecone) and take top n_results
         all_results.sort(key=lambda x: x['score'], reverse=True)
         return all_results[:n_results]
+    
+    def search_conversation_memory(
+        self,
+        query: str,
+        session_id: str,
+        filters: Optional[Dict] = None,
+        top_k: int = 3
+    ) -> List[Dict[str, Any]]:
+        """
+        Search conversation memory with hybrid filtering
+        
+        Args:
+            query: Search query
+            session_id: Session ID to search within
+            filters: Optional Pinecone filters
+            top_k: Number of results
+            
+        Returns:
+            List of summary dicts
+        """
+        from core.memory_manager import get_memory_manager
+        memory_manager = get_memory_manager()
+        
+        return memory_manager.search_summaries(
+            query=query,
+            session_id=session_id,
+            filters=filters,
+            top_k=top_k
+        )
     
     def get_statistics(self) -> Dict[str, Any]:
         """Get index statistics"""
