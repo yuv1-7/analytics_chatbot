@@ -1295,6 +1295,9 @@ Analysis Story:
 Story Elements:
 {json.dumps(story_elements, indent=2)}
 
+Computed Values (Available Placeholders):
+{json.dumps(flat_map, indent=2)}
+
 Domain Context:
 {domain_context}
 
@@ -1306,12 +1309,32 @@ Conversation:
 
 {personalized_context_section}
 
-CRITICAL:
-- Produce insights using placeholders (e.g., {{BEST_MODEL}}, {{NUM_MODELS}})
-- Do NOT invent numbers; always use placeholders.
-- Structure: Executive Summary, Key Findings, Deep Dive, Recommendations
-"""
+CRITICAL PLACEHOLDER RULES:
+1. ONLY use placeholders that exist in "Computed Values" above
+2. If a placeholder is not in Computed Values, write the text WITHOUT using that placeholder
+3. For missing values, use descriptive text instead:
+   - Instead of "{{NUM_METRICS}} metrics", write "several key metrics"
+   - Instead of "{{SECOND_BEST_MODEL}}", write "another strong model"
+   - Instead of "{{ALTERNATE_MODEL}}", write "an alternative model"
 
+APPROVED PLACEHOLDERS (verify these exist in Computed Values):
+{", ".join(flat_map.keys())}
+
+Example - GOOD:
+"The ensemble achieved {{BEST_RMSE}} RMSE, outperforming the second-best model by a moderate margin."
+
+Example - BAD (if SECOND_BEST_MODEL not in Computed Values):
+"{{SECOND_BEST_MODEL}} excelled in MAPE"
+
+Example - FIXED (write naturally without placeholder):
+"Another model excelled in MAPE, providing stable percentage error estimates"
+
+Structure your response with:
+- Executive Summary (2-3 sentences)
+- Key Findings (bullet points, use ONLY available placeholders)
+- Deep Dive (detailed analysis)
+- Recommendations (actionable)
+"""
     # ---------- GET TEMPLATE FROM LLM ----------
     try:
         llm_response = llm.invoke(prompt)
