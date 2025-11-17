@@ -23,11 +23,10 @@ llm = ChatOpenAI(
 
 llm_with_tools = llm.bind_tools(ALL_TOOLS)
 
-
-
 def get_personalized_context_section(state: AgentState) -> str:
     """
     Extract and format personalized business context for inclusion in prompts.
+    Now retrieves from user-specific chunked context in Pinecone.
     
     Args:
         state: Current agent state
@@ -35,25 +34,54 @@ def get_personalized_context_section(state: AgentState) -> str:
     Returns:
         Formatted context section or empty string
     """
-    personalized_context = state.get('personalized_business_context', '')
+    user_id = state.get('user_id')
+    user_query = state.get('user_query', '')
     
-    if not personalized_context or not personalized_context.strip():
+    if not user_id:
         return ""
     
-    return f"""
-
-### PERSONALIZED BUSINESS CONTEXT (CRITICAL - USER PROVIDED):
-The user has provided the following specific business context that MUST be considered in your analysis and responses:
-
-{personalized_context.strip()}
-
-IMPORTANT: This personalized context takes precedence over generic knowledge. Use this context to:
-- Customize your analysis and recommendations
-- Reference specific products, competitors, or markets mentioned
-- Align your insights with the user's business priorities
-- Provide relevant examples from their context
-"""
-
+    try:
+        from core.user_context_manager import get_user_context_manager
+        
+        context_manager = get_user_context_manager()
+        
+        # Retrieve top 3 semantically relevant chunks
+        chunks = context_manager.retrieve_user_context(
+            user_id=user_id,
+            query=user_query,
+            top_k=3
+        )
+        
+        if not chunks:
+            return ""
+        
+        # Format chunks
+        context_parts = []
+        context_parts.append("### PERSONALIZED BUSINESS CONTEXT (CRITICAL - USER PROVIDED):")
+        context_parts.append("The user has provided the following specific business context that MUST be considered:")
+        context_parts.append("")
+        
+        for i, chunk in enumerate(chunks, 1):
+            category = chunk['category'].upper()
+            text = chunk['chunk_text']
+            relevance = chunk['relevance']
+            
+            context_parts.append(f"**Context Chunk {i} ({category}) [Relevance: {relevance:.2f}]:**")
+            context_parts.append(text)
+            context_parts.append("")
+        
+        context_parts.append("IMPORTANT: This personalized context takes precedence over generic knowledge.")
+        context_parts.append("Use this context to:")
+        context_parts.append("- Customize your analysis and recommendations")
+        context_parts.append("- Reference specific products, competitors, or markets mentioned")
+        context_parts.append("- Align your insights with the user's business priorities")
+        context_parts.append("- Provide relevant examples from their context")
+        
+        return "\n".join(context_parts)
+        
+    except Exception as e:
+        print(f"Warning: Failed to retrieve user context: {e}")
+        return ""
 
 class ParsedIntent(BaseModel):
     use_case: Optional[str] = Field(
@@ -166,9 +194,9 @@ def query_understanding_agent(state: AgentState) -> dict:
     current_topic = state.get('current_topic')
     clarification_attempts = state.get('clarification_attempts', 0)
     last_query_summary = state.get('last_query_summary')
-    final_insights = state.get('final_insights')  # NEW: Last insight generated
+    final_insights = state.get('final_insights')
     
-    # NEW: Check for explicit turn reference
+    #Check for explicit turn reference
     has_turn_ref, turn_number = detect_turn_reference(query)
     
     personalized_context_section = get_personalized_context_section(state)
@@ -183,7 +211,7 @@ def query_understanding_agent(state: AgentState) -> dict:
     if last_query_summary:
         context_parts.append(f"Previous query: {last_query_summary}")
     
-    # NEW: Include last insight summary for "why" questions
+    #Include last insight summary for "why" questions
     if final_insights:
         context_parts.append(f"Last insight summary: {final_insights[:500]}...")
     
@@ -312,11 +340,11 @@ Examples:
             extracted = extract_model_names_from_text(msg.content)
             new_mentioned_models.extend(extracted)
     
-    # NEW: Determine if we need memory or database
+    # Determine if we need memory or database
     needs_memory = result.references_specific_turn or (result.references_previous_context and not final_models)
     needs_database = bool(result.use_case or final_models or result.comparison_type)
     
-    # NEW: If referencing specific turn, always need memory
+    #If referencing specific turn, always need memory
     if has_turn_ref:
         needs_memory = True
         result.references_specific_turn = True
@@ -380,8 +408,7 @@ def context_retrieval_agent(state: AgentState) -> dict:
             referenced_turn = state.get('parsed_intent', {}).get('referenced_turn_number')
             if referenced_turn:
                 filters["turn_number"] = {"$eq": referenced_turn}
-            
-            # Use lazy search
+        
             chunks, needs_clarify, clarify_msg = retriever.search_conversation_memory(
                 query=user_query,
                 session_id=session_id,
@@ -398,7 +425,7 @@ def context_retrieval_agent(state: AgentState) -> dict:
                 print(f"[Memory] ⚠ Clarification needed: {clarification_question}")
             elif conversation_chunks:
                 print(f"[Memory] ✓ Retrieved {len(conversation_chunks)} chunks")
-                # Log what we got
+
                 for chunk in conversation_chunks:
                     chunk_type = "full insight" if not chunk.get('is_partial') else "partial chunk"
                     print(f"  - Turn {chunk['turn']}: {chunk_type} (relevance: {chunk['relevance']:.2f})")

@@ -66,10 +66,11 @@ class AgentState(TypedDict):
     current_topic: Optional[str]
     clarification_attempts: int
     
-    # Personalized Business Context (EXISTING FEATURE - KEEP THIS)
+    # Personalized Business Context
     personalized_business_context: Optional[str]
+    # User identification
+    user_id: Optional[str]
     
-    # NEW: Conversation Memory Fields
     session_id: str
     turn_number: int
     needs_memory: bool

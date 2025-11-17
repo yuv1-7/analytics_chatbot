@@ -9,8 +9,8 @@ import plotly.graph_objects as go
 from datetime import datetime
 import pandas as pd
 import time
-from core.session_cleanup import cleanup_old_sessions
 import uuid
+from core.session_cleanup import cleanup_old_sessions
 
 load_dotenv()
 
@@ -197,7 +197,7 @@ def initialize_session_state():
     if 'context_last_updated' not in st.session_state:
         st.session_state.context_last_updated = None
     
-    # NEW: Session ID generation
+    # NEW: Session ID generation (MUST be before conversation_state)
     if 'session_id' not in st.session_state:
         st.session_state.session_id = f"session_{uuid.uuid4().hex[:12]}"
         print(f"✓ New session created: {st.session_state.session_id}")
@@ -206,6 +206,11 @@ def initialize_session_state():
     if 'turn_number' not in st.session_state:
         st.session_state.turn_number = 0
     
+    # NEW: User ID (can be None until login)
+    if 'user_id' not in st.session_state:
+        st.session_state.user_id = None
+    
+    # NOW initialize conversation_state (after session_id and user_id exist)
     if 'conversation_state' not in st.session_state:
         st.session_state.conversation_state = {
             "messages": [],
@@ -246,8 +251,9 @@ def initialize_session_state():
             "viz_warnings": None,
             "clarification_attempts": 0,
             "personalized_business_context": "",
+            "user_id": st.session_state.user_id,  # Now safe to reference
             # NEW: Memory fields
-            "session_id": st.session_state.session_id,
+            "session_id": st.session_state.session_id,  # Now safe to reference
             "turn_number": 0,
             "needs_memory": False,
             "needs_database": True,
@@ -278,7 +284,6 @@ def initialize_session_state():
         except Exception as e:
             print(f"⚠ Cleanup error (non-critical): {e}")
             st.session_state.cleanup_done = True
-
 
 
 def initialize_log_dataframe():
@@ -457,8 +462,8 @@ def process_query(user_input):
     # Add personalized context to conversation state
     st.session_state.conversation_state["user_query"] = user_input
     st.session_state.conversation_state["personalized_business_context"] = st.session_state.personalized_context
+    st.session_state.conversation_state["user_id"] = st.session_state.get('user_id')
     st.session_state.conversation_state["session_id"] = st.session_state.session_id
-    st.session_state.conversation_state["turn_number"] = st.session_state.turn_number
     st.session_state.conversation_state["execution_path"] = []
     st.session_state.conversation_state["rendered_charts"] = None
     st.session_state.conversation_state["visualization_specs"] = None
@@ -497,8 +502,6 @@ def process_query(user_input):
             viz_strategy = final_state.get('viz_strategy')
             viz_reasoning = final_state.get('viz_reasoning')
             viz_warnings = final_state.get('viz_warnings', [])
-            
-            print(f"Turn {st.session_state.turn_number}: {len(rendered_charts)} charts")
 
             assistant_response = {
                 'type': 'assistant',
@@ -561,70 +564,205 @@ def process_query(user_input):
             'content': f"Error processing query: {str(e)}\n\nDetails:\n{error_details}"
         }
 
-
-
+def show_login_screen():
+    """Display login screen for user identification"""
+    st.markdown("""
+    <div class="app-header">
+        <div class="app-title">🏥 Pharma Analytics Assistant</div>
+        <div class="app-subtitle">AI-Powered Insights for Healthcare Analytics</div>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    st.markdown("---")
+    
+    st.markdown("### 👤 User Identification")
+    st.info("Enter a unique identifier to access your personalized analytics workspace.")
+    
+    user_id_input = st.text_input(
+        "Your User ID (email, username, or code)",
+        placeholder="e.g., john.doe@pharma.com or user123",
+        help="This ID will be used to store and retrieve your personalized business context"
+    )
+    
+    col1, col2 = st.columns([1, 3])
+    with col1:
+        if st.button("Continue", use_container_width=True, type="primary", disabled=not user_id_input):
+            if user_id_input and user_id_input.strip():
+                st.session_state.user_id = user_id_input.strip()
+                st.success(f"✓ Logged in as: {st.session_state.user_id}")
+                st.rerun()
+            else:
+                st.error("Please enter a valid User ID")
+    
+    st.markdown("---")
+    st.markdown("""
+    **Note:** 
+    - No password required (authentication coming soon)
+    - Your context is stored securely and retrievable using your ID
+    - You can change your personalized context anytime in the sidebar
+    """)
 
 def main():
     initialize_session_state()
     initialize_log_dataframe()
 
+    if 'user_id' not in st.session_state or not st.session_state.user_id:
+        show_login_screen()
+        return
+    
     # Sidebar for personalized context
+    # Sidebar for personalized context and user info
     with st.sidebar:
+        # User info at top
+        st.markdown(f"### 👤 User: `{st.session_state.user_id}`")
+        if st.button("🚪 Logout", use_container_width=True):
+            # Clear user session
+            st.session_state.user_id = None
+            st.session_state.personalized_context = ""
+            st.session_state.context_last_updated = None
+            st.rerun()
+        
+        st.markdown("---")
+        
         st.markdown("### 📝 Personalized Business Context")
         st.markdown("Add your own business context to customize responses:")
         
+        # Show current context summary
+        try:
+            from core.user_context_manager import get_user_context_manager
+            context_manager = get_user_context_manager()
+            
+            summary = context_manager.get_user_context_summary(st.session_state.user_id)
+            
+            if summary.get('has_context'):
+                st.success(f"✅ Active Context: {summary['chunk_count']} chunks")
+                
+                # Show category breakdown
+                if summary.get('categories'):
+                    st.markdown("**Categories:**")
+                    for cat, count in summary['categories'].items():
+                        st.markdown(f"- {cat}: {count} chunk(s)")
+                
+                # Show last updated
+                if summary.get('last_updated'):
+                    st.info(f"Last updated: {summary['last_updated'][:19]}")
+                
+                # Show total size
+                if summary.get('total_chars'):
+                    st.info(f"Total size: {summary['total_chars']} characters")
+            else:
+                st.warning("⚠ No personalized context set")
+        except Exception as e:
+            st.error(f"Error loading context: {e}")
+        
+        st.markdown("---")
+        
         # Text area for context input
         new_context = st.text_area(
-            "Enter your business context",
-            value=st.session_state.personalized_context,
-            height=200,
-            placeholder="Example:\n- Our company focuses on oncology products\n- We launched Product X in Q3 2024\n- Our main competitors are Company A and Company B\n- Target markets: US Northeast, California",
-            help="This context will be included in all agent prompts to provide personalized responses"
+            "Enter your business context (free-form text)",
+            value=st.session_state.get('personalized_context', ''),
+            height=300,
+            placeholder="""Example:
+- Our company focuses on oncology products
+- We launched Product X in Q3 2024
+- Our main competitors are Company A and Company B
+- Target markets: US Northeast, California
+- Key KPIs: NRx growth, market share, HCP engagement""",
+            help="Context will be automatically chunked and categorized"
         )
         
         # Save/Update button
         col1, col2 = st.columns(2)
         with col1:
             if st.button("💾 Save Context", use_container_width=True):
-                st.session_state.personalized_context = new_context
-                st.session_state.context_last_updated = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                st.success("✅ Context saved!")
-                st.rerun()
+                if new_context and new_context.strip():
+                    with st.spinner("Saving context..."):
+                        try:
+                            from core.user_context_manager import get_user_context_manager
+                            context_manager = get_user_context_manager()
+                            
+                            result = context_manager.store_user_context(
+                                user_id=st.session_state.user_id,
+                                context_text=new_context
+                            )
+                            
+                            if result['success']:
+                                st.session_state.personalized_context = new_context
+                                st.session_state.context_last_updated = result['timestamp']
+                                st.success(f"✅ Saved {result['chunks_created']} chunks!")
+                                st.info(f"Categories: {', '.join(result['categories'])}")
+                                st.rerun()
+                            else:
+                                st.error(f"Failed: {result.get('error')}")
+                        except Exception as e:
+                            st.error(f"Error: {e}")
+                else:
+                    st.warning("Please enter some context first")
         
         with col2:
             if st.button("🗑️ Clear Context", use_container_width=True):
-                st.session_state.personalized_context = ""
-                st.session_state.context_last_updated = None
-                st.success("✅ Context cleared!")
-                st.rerun()
+                try:
+                    from core.user_context_manager import get_user_context_manager
+                    context_manager = get_user_context_manager()
+                    
+                    result = context_manager.delete_user_context(st.session_state.user_id)
+                    
+                    if result['success']:
+                        st.session_state.personalized_context = ""
+                        st.session_state.context_last_updated = None
+                        st.success("✅ Context cleared!")
+                        st.rerun()
+                    else:
+                        st.error(f"Failed: {result.get('error')}")
+                except Exception as e:
+                    st.error(f"Error: {e}")
         
-        # Display context status
-        if st.session_state.personalized_context:
-            st.markdown("---")
-            st.markdown("**📊 Context Status**")
-            st.info(f"**Characters:** {len(st.session_state.personalized_context)}")
-            if st.session_state.context_last_updated:
-                st.info(f"**Last Updated:** {st.session_state.context_last_updated}")
-            
-            # Preview
-            with st.expander("👁️ Preview Context"):
-                st.text(st.session_state.personalized_context)
-        else:
-            st.markdown("---")
-            st.info("ℹ️ No personalized context set. Responses will use default knowledge only.")
+        # Version history expander
+        st.markdown("---")
+        with st.expander("📜 View Version History"):
+            try:
+                from core.user_context_manager import get_user_context_manager
+                context_manager = get_user_context_manager()
+                
+                versions = context_manager.get_version_history(st.session_state.user_id)
+                
+                if versions:
+                    # Show only active versions by default
+                    active_versions = [v for v in versions if not v['is_archived']]
+                    
+                    if active_versions:
+                        st.markdown("**Current Version:**")
+                        for v in active_versions:
+                            status = "🟢" if not v['is_archived'] else "🔴"
+                            st.markdown(f"{status} Chunk {v['chunk_index']} v{v['version']} ({v['category']})")
+                            st.caption(f"Updated: {v['updated_at'][:19]}")
+                            st.caption(f"Preview: {v['chunk_preview']}")
+                            st.markdown("---")
+                    
+                    # Show archived if requested
+                    archived_versions = [v for v in versions if v['is_archived']]
+                    if archived_versions:
+                        show_archived = st.checkbox("Show archived versions")
+                        if show_archived:
+                            st.markdown("**Archived Versions:**")
+                            for v in archived_versions[:10]:  # Show max 10 archived
+                                st.markdown(f"🔴 Chunk {v['chunk_index']} v{v['version']} ({v['category']})")
+                                st.caption(f"Archived: {v['updated_at'][:19]}")
+                                st.caption(f"Preview: {v['chunk_preview']}")
+                else:
+                    st.info("No version history available")
+            except Exception as e:
+                st.error(f"Error loading versions: {e}")
         
         st.markdown("---")
         st.markdown("### 💡 Context Tips")
         st.markdown("""
-        - Include product names and launch dates
-        - Specify target markets/regions
-        - Mention key competitors
-        - Add therapeutic areas of focus
-        - Note any special business rules
-        - Include relevant KPIs or metrics
+        - Context is auto-chunked and categorized
+        - Top 3 relevant chunks used per query
+        - Updates create new versions (max 10/chunk)
+        - Categories: competitors, products, markets, KPIs, HCP targeting, campaigns
         """)
 
-    # Main content area
     # Main content area
     st.markdown("""
     <div class="app-header">
@@ -634,7 +772,7 @@ def main():
     """, unsafe_allow_html=True)
     
     # Status badges
-    status_col1, status_col2, status_col3 = st.columns([1, 2, 1])  # Changed to 3 columns
+    status_col1, status_col2 = st.columns([1, 2])
     with status_col1:
         if st.session_state.db_initialized:
             st.markdown('<div class="status-badge">● Database Connected</div>', unsafe_allow_html=True)
@@ -646,9 +784,7 @@ def main():
             context_preview = st.session_state.personalized_context[:50] + "..." if len(st.session_state.personalized_context) > 50 else st.session_state.personalized_context
             st.markdown(f'<div class="context-badge">📝 Custom Context Active: {len(st.session_state.personalized_context)} chars</div>', unsafe_allow_html=True)
     
-    # NEW: Display session info
-    with status_col3:
-        st.markdown(f'<div class="status-badge">📝 Session: {st.session_state.session_id[:12]}... | Turn: {st.session_state.turn_number}</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-header">💬 Conversation</div>', unsafe_allow_html=True)
     
     if not st.session_state.chat_history:
         welcome_message = """
@@ -708,28 +844,22 @@ def main():
         with col_clear:
             if st.button("🗑️ Clear Chat", use_container_width=True):
                 st.session_state.chat_history = []
-                st.session_state.turn_number = 0  # NEW: Reset turn counter
                 st.session_state.conversation_state = {
                     "messages": [], "user_query": None, "parsed_intent": None, "use_case": None,
                     "models_requested": None, "comparison_type": None, "time_range": None,
                     "metrics_requested": None, "entities_requested": None, "requires_visualization": False,
                     "context_documents": None, "generated_sql": None, "sql_purpose": None,
-                    "expected_columns": None, "sql_retry_count": 0, "needs_sql_retry": False,
-                    "sql_error_feedback": None, "retrieved_data": None, "tool_calls": None,
+                    "expected_columns": None, "retrieved_data": None, "tool_calls": None,
                     "analysis_results": None, "visualization_specs": None, "rendered_charts": None,
                     "final_insights": None, "needs_clarification": False, "clarification_question": None,
                     "loop_count": 0, "next_action": None, "execution_path": [],
                     "conversation_context": {}, "mentioned_models": [], "mentioned_model_ids": [],
                     "last_query_summary": None, "current_topic": None, "viz_strategy": None,
-                    "viz_reasoning": None, "viz_warnings": None, "clarification_attempts": 0,
+                    "viz_reasoning": None, "viz_warnings": None,
                     "personalized_business_context": st.session_state.personalized_context,
-                    # NEW: Memory fields
-                    "session_id": st.session_state.session_id,
-                    "turn_number": 0,
-                    "needs_memory": False,
-                    "needs_database": True,
-                    "conversation_summaries": None,
-                    "summary_generated": False
+                    "personalized_business_context": st.session_state.personalized_context,
+                    "user_id": st.session_state.get('user_id'),
+                    "session_id": st.session_state.session_id
                 }
                 st.rerun()
 
