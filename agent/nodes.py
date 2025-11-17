@@ -1288,15 +1288,41 @@ Generate your response.
     
     # === STEP 1: Extract story from analysis ===
     
-    analysis_type = analysis_results.get('analysis_type', 'general')
-    story = analysis_results.get('story', '')
-    story_elements = analysis_results.get('story_elements', {})
+    # Use advanced story if available (from narrative_structure)
+    story_structure = analysis_results.get('narrative_structure', {})
     
-    if not story:
-        story = "NO_STORY: Analysis did not generate narrative."
-    
-    print(f"[Insight Gen] Analysis type: {analysis_type}")
-    print(f"[Insight Gen] Story length: {len(story)} chars")
+    if story_structure:
+        # Advanced story generator was used
+        executive_summary = story_structure.get('executive_summary', '')
+        key_findings = story_structure.get('key_findings', [])
+        detailed_analysis = story_structure.get('detailed_analysis', {})
+        recommendations = story_structure.get('recommendations', [])
+        
+        # Format advanced story for prompt
+        story = f"""
+**EXECUTIVE SUMMARY:**
+{executive_summary}
+
+**KEY FINDINGS:**
+{chr(10).join(f"- {finding}" for finding in key_findings)}
+
+**DETAILED ANALYSIS:**
+{json.dumps(detailed_analysis, indent=2)}
+
+**RECOMMENDATIONS:**
+{chr(10).join(f"- {rec}" for rec in recommendations)}
+"""
+    else:
+        # Fallback to basic story
+        analysis_type = analysis_results.get('analysis_type', 'general')
+        story = analysis_results.get('story', '')
+        story_elements = analysis_results.get('story_elements', {})
+        
+        if not story:
+            story = "NO_STORY: Analysis did not generate narrative."
+        
+        print(f"[Insight Gen] Analysis type: {analysis_type}")
+        print(f"[Insight Gen] Story length: {len(story)} chars")
     
     # === STEP 2: LLM generates dynamic insights based on story ===
     
@@ -1313,7 +1339,7 @@ Generate your response.
         if domain_snippets:
             domain_context = "\n\n**Relevant Domain Knowledge:**\n" + "\n\n".join(domain_snippets)
     
-    prompt = f"""You are a pharma analytics expert generating insights for stakeholders.
+    prompt = f"""You are a world-class pharma analytics strategist presenting to C-suite executives.
 
 **User Question:**
 {state['user_query']}
@@ -1322,7 +1348,7 @@ Generate your response.
 {story}
 
 **Structured Story Elements:**
-{json.dumps(story_elements, indent=2)}
+{json.dumps(story_structure.get('key_findings', story_elements) if story_structure else story_elements, indent=2)}
 
 {domain_context}
 {conversation_context}
@@ -1339,12 +1365,12 @@ Generate your response.
 
 2. You MUST only use these placeholders, exactly as written:
 
-{{BEST_MODEL}}
-{{NUM_MODELS}}
-{{BEST_METRIC_NAME}}
-{{BEST_METRIC_VALUE}}
-{{METRIC_RANKINGS_TABLE}}
-{{PERFORMANCE_SUMMARY_TABLE}}
+{{{{BEST_MODEL}}}}
+{{{{NUM_MODELS}}}}
+{{{{BEST_METRIC_NAME}}}}
+{{{{BEST_METRIC_VALUE}}}}
+{{{{METRIC_RANKINGS_TABLE}}}}
+{{{{PERFORMANCE_SUMMARY_TABLE}}}}
 
 Do not invent any new placeholders.
 Do not use lowercase placeholders.
@@ -1356,6 +1382,29 @@ Do not use lowercase placeholders.
    - Key Findings (narrative interpretation)
    - Deep Dive Analysis (what the story reveals)
    - Strategic Recommendations (what to do)
+
+**TONE GUIDELINES:**
+- Confident but not arrogant
+- Data-informed but not technical
+- Action-oriented but risk-aware
+- Engaging but professional
+
+**STORYTELLING TECHNIQUES:**
+✅ **DO:**
+- Use storytelling techniques (tension, resolution, insight)
+- Vary sentence structure and length
+- Include transitional phrases
+- Use active voice
+- Make every sentence purposeful
+- Reference visualizations naturally when available
+
+❌ **DON'T:**
+- Use excessive bullet points (prefer prose)
+- Include raw numbers outside placeholders
+- Repeat yourself
+- Use generic phrases ("it's interesting that...")
+- Write in passive voice
+- Create walls of text (vary paragraph length)
 
 **Example (for performance comparison):**
 
