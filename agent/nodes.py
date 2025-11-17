@@ -758,11 +758,10 @@ class AnalysisOutput(BaseModel):
     anomalies: List[str] = Field(description="Unusual observations or outliers")
     statistical_summary: Dict[str, Any] = Field(description="Statistical summaries")
 
-
 def analysis_computation_agent(state: AgentState) -> dict:
     """
     Deterministic analysis using Python aggregators (NO LLM)
-    
+
     Returns structured analysis with:
     - Computed metrics
     - Rankings
@@ -771,10 +770,10 @@ def analysis_computation_agent(state: AgentState) -> dict:
     """
     execution_path = state.get('execution_path', [])
     execution_path.append('analysis_computation')
-    
+
     messages = state.get('messages', [])
     tool_results = []
-    
+
     from langchain_core.messages import ToolMessage
     for msg in messages:
         if isinstance(msg, ToolMessage):
@@ -783,7 +782,8 @@ def analysis_computation_agent(state: AgentState) -> dict:
                 tool_results.append(result)
             except:
                 continue
-    
+
+    # If no tool data available
     if not tool_results or not any(r.get('success') for r in tool_results):
         return {
             "analysis_results": {
@@ -794,16 +794,41 @@ def analysis_computation_agent(state: AgentState) -> dict:
             },
             "execution_path": execution_path
         }
-    
-    # Extract successful data
+
+    # Extract rows into successful_data
     successful_data = []
     for result in tool_results:
         if result.get('success') and result.get('data'):
             successful_data.extend(result['data'])
-    
-    # === DETERMINISTIC ANALYSIS (NO LLM) ===
-    from core.analysis_aggregators import analyze_data
-    
+
+    # ===========================================
+    # AUTO-DETECT PERFORMANCE ANALYSIS REQUIREMENT
+    # ===========================================
+    try:
+        detected_metric_cols = {
+            "rmse", "mae", "mse", "mape", "r2", "r2_score",
+            "metric_name", "metric_value", "accuracy",
+            "precision", "recall", "f1_score", "auc_roc"
+        }
+
+        detected_model_cols = {"model_name", "model_type"}
+
+        if successful_data:
+            lower_cols = {col.lower() for col in successful_data[0].keys()}
+
+            if (lower_cols & detected_metric_cols) or (lower_cols & detected_model_cols):
+                print("[Analysis] Auto-switching to PERFORMANCE analysis (based on SQL response)")
+                state["comparison_type"] = "performance"
+            else:
+                state["comparison_type"] = state.get("comparison_type", "general")
+        else:
+            state["comparison_type"] = "general"
+
+    except Exception as e:
+        print(f"[Analysis] Auto-detect failure: {e}")
+        state["comparison_type"] = state.get("comparison_type", "general")
+
+    # Build query context for aggregator
     query_context = {
         'user_query': state.get('user_query'),
         'comparison_type': state.get('comparison_type'),
@@ -811,22 +836,22 @@ def analysis_computation_agent(state: AgentState) -> dict:
         'models_requested': state.get('models_requested'),
         'metrics_requested': state.get('metrics_requested')
     }
-    
+
+    # Run deterministic analysis
+    from core.analysis_aggregators import analyze_data
     analysis_results = analyze_data(successful_data, query_context)
-    
-    # Add raw data for visualization (but not for LLM)
+
     analysis_results['raw_data'] = tool_results
     analysis_results['data_row_count'] = len(successful_data)
-    
+
     print(f"[Analysis] Type: {analysis_results.get('analysis_type')}")
-    print(f"[Analysis] Patterns: {analysis_results.get('patterns')}")
-    print(f"[Analysis] Data rows: {len(successful_data)}")
-    
+    print(f"[Analysis] Rows: {analysis_results.get('data_row_count')}")
+    print(f"[Analysis] Patterns: {analysis_results.get('patterns', [])}")
+
     return {
         "analysis_results": analysis_results,
         "execution_path": execution_path
     }
-
 
 def _compute_basic_metrics(data: List[Dict[str, Any]]) -> Dict[str, Any]:
     if not data:
@@ -1206,257 +1231,151 @@ def visualization_rendering_agent(state: AgentState) -> dict:
 
 def insight_generation_agent(state: AgentState) -> dict:
     """
-    Generate dynamic insights using LLM with story-based prompting
-    
-    Flow:
-    1. LLM receives qualitative STORY (no raw data)
-    2. LLM generates narrative insights with {{PLACEHOLDERS}}
-    3. Python fills placeholders with actual values
-    4. Return filled insights to user
+    FINAL PATCHED VERSION
+    - Fixes placeholder substitution
+    - Ensures flattened computed_values feed the filler
+    - Fixes indentation issues
+    - Guarantees no missing story_elements crashes
     """
     execution_path = state.get('execution_path', [])
     execution_path.append('insight_generation')
-    
-    analysis_results = state.get('analysis_results', {})
-    context_docs = state.get('context_documents', [])
-    comparison_type = state.get('comparison_type')
-    rendered_charts = state.get('rendered_charts', [])
-    viz_strategy = state.get('viz_strategy')
-    viz_reasoning = state.get('viz_reasoning')
-    viz_warnings = state.get('viz_warnings', [])
-    conversation_summaries = state.get('conversation_summaries', [])
-    needs_database = state.get('needs_database', True)
-    
+
+    analysis_results = state.get('analysis_results', {}) or {}
+    context_docs = state.get('context_documents', []) or []
+    rendered_charts = state.get('rendered_charts', []) or []
+    conversation_summaries = state.get('conversation_summaries', []) or []
     personalized_context_section = get_personalized_context_section(state)
-    
-    # Build visualization context
+
+    # ---------- STORY ELEMENTS ----------
+    story = analysis_results.get("story") or "NO_STORY: Analysis did not generate narrative."
+    story_elements = analysis_results.get("story_elements") or {}
+
+    # ---------- VISUALIZATION CONTEXT ----------
     viz_context = ""
     if rendered_charts:
-        viz_descriptions = []
-        for i, chart in enumerate(rendered_charts, 1):
-            viz_descriptions.append(
-                f"**Chart {i}: {chart['title']}**\n"
-                f"Type: {chart['type']}\n"
-                f"Shows: {chart.get('explanation', 'Data visualization')}"
+        parts = []
+        for i, ch in enumerate(rendered_charts, 1):
+            parts.append(
+                f"**Chart {i}: {ch.get('title','Chart')}**\n"
+                f"Type: {ch.get('type')} \n"
+                f"Shows: {ch.get('explanation','Chart explaining metric relationships')}"
             )
-        
-        viz_context = f"""
+        viz_context = "\n\n".join(parts)
 
-📊 **Visualizations Generated ({viz_strategy}):**
-{viz_reasoning}
-
-{chr(10).join(viz_descriptions)}
-
-Reference these charts naturally in your explanation.
-"""
-    
-    if viz_warnings:
-        viz_context += f"\n\n⚠️ **Visualization Notes:**\n" + "\n".join(f"- {w}" for w in viz_warnings)
-    
-    # Build conversation context
-    conversation_context = ""
+    # ---------- CONVERSATION CONTEXT ----------
+    conv_context = ""
     if conversation_summaries:
-        conversation_context = "\n\n**Previous Conversation Context:**\n"
-        for summary in conversation_summaries:
-            chunk_preview = summary.get('insight_chunk', '')[:300] + "..."
-            conversation_context += f"\nTurn {summary['turn']}: {chunk_preview}\n"
-    
-    # Handle memory-only queries (no database)
-    if not needs_database and conversation_summaries:
-        prompt = f"""Answer the user's question using conversation history.
+        conv_context = "**Previous Conversation:**\n"
+        for chunk in conversation_summaries:
+            txt = chunk.get("insight_chunk","")
+            preview = txt[:300] + ("..." if len(txt)>300 else "")
+            conv_context += f"- Turn {chunk.get('turn')}: {preview}\n"
 
-User Query: {state['user_query']}
-
-{conversation_context}
-
-Instructions:
-- Answer directly from conversation history
-- Reference specific turns when relevant
-- If information isn't in summaries, mention that you can fetch more details
-- Be specific and factual
-
-Generate your response.
-"""
-        
-        response = llm.invoke(prompt)
-        
-        return {
-            "messages": [AIMessage(content=response.content)],
-            "final_insights": response.content,
-            "execution_path": execution_path
-        }
-    
-    # === STEP 1: Extract story from analysis ===
-    
-    analysis_type = analysis_results.get('analysis_type', 'general')
-    story = analysis_results.get('story', '')
-    story_elements = analysis_results.get('story_elements', {})
-    
-    if not story:
-        story = "NO_STORY: Analysis did not generate narrative."
-    
-    print(f"[Insight Gen] Analysis type: {analysis_type}")
-    print(f"[Insight Gen] Story length: {len(story)} chars")
-    
-    # === STEP 2: LLM generates dynamic insights based on story ===
-    
-    # Build domain context (NO RAW DATA - only qualitative knowledge)
+    # ---------- DOMAIN CONTEXT ----------
     domain_context = ""
     if context_docs:
-        domain_snippets = []
+        snip = []
         for doc in context_docs[:3]:
-            if doc.get('source') == 'domain_knowledge':
-                title = doc.get('title', 'Context')
-                content = doc.get('content', '')[:500]  # Just snippet for context
-                domain_snippets.append(f"**{title}**\n{content}...")
-        
-        if domain_snippets:
-            domain_context = "\n\n**Relevant Domain Knowledge:**\n" + "\n\n".join(domain_snippets)
-    
-    prompt = f"""You are a pharma analytics expert generating insights for stakeholders.
+            title = doc.get("title","Context")
+            content = doc.get("content","")[:300]
+            snip.append(f"**{title}**\n{content}...")
+        if snip:
+            domain_context = "\n\n".join(snip)
 
-**User Question:**
-{state['user_query']}
+    # ---------- LLM PROMPT FOR TEMPLATE ----------
+    prompt = f"""
+You are a pharma analytics expert producing stakeholder insights.
 
-**Analysis Story (qualitative narrative of what happened):**
+User Query:
+{state.get('user_query')}
+
+Analysis Story:
 {story}
 
-**Structured Story Elements:**
+Story Elements:
 {json.dumps(story_elements, indent=2)}
 
+Domain Context:
 {domain_context}
-{conversation_context}
+
+Visualizations:
 {viz_context}
+
+Conversation:
+{conv_context}
+
 {personalized_context_section}
 
-**CRITICAL INSTRUCTIONS:**
-
-1. **Generate Dynamic Narrative Insights** based on the story
-   - Use your expertise to interpret what the patterns mean
-   - Explain WHY these patterns matter for pharma business
-   - Provide strategic recommendations
-   - Make it engaging and actionable
-
-2. **Use Placeholders for Specific Values:**
-   - For model names: {{{{BEST_MODEL}}}}, {{{{MODEL_1}}}}, {{{{MODEL_2}}}}
-   - For metrics: {{{{METRIC_VALUE}}}}, {{{{BEST_RMSE}}}}, {{{{GAP_PERCENT}}}}
-   - For counts: {{{{NUM_MODELS}}}}, {{{{NUM_WITH_DRIFT}}}}
-   - For tables: {{{{RANKINGS_TABLE}}}}, {{{{COMPARISON_TABLE}}}}
-   
-3. **Write Professionally** - Clear, confident, actionable
-
-4. **Structure Your Response:**
-   - Executive Summary (2-3 sentences)
-   - Key Findings (narrative interpretation)
-   - Deep Dive Analysis (what the story reveals)
-   - Strategic Recommendations (what to do)
-
-**Example (for performance comparison):**
-
-# Model Performance Analysis
-
-## Executive Summary
-Based on comprehensive analysis of {{{{NUM_MODELS}}}} models, {{{{BEST_MODEL}}}} emerges as the clear winner with superior performance across multiple metrics. The competitive gap is significant, with {{{{BEST_MODEL}}}} outperforming the nearest competitor by {{{{GAP_PERCENT}}}}%.
-
-## Key Findings
-
-**Clear Performance Leader Identified**
-{{{{BEST_MODEL}}}} demonstrates exceptional predictive accuracy with {{{{BEST_METRIC_NAME}}}} of {{{{BEST_METRIC_VALUE}}}}. This level of performance is rare in pharma forecasting and represents a meaningful improvement over previous baselines.
-
-**Consistency Across Metrics**
-What makes {{{{BEST_MODEL}}}} particularly compelling is not just peak performance, but consistency. It ranks in the top 2 across all evaluated metrics, demonstrating robust generalization.
-
-## Performance Rankings
-
-{{{{RANKINGS_TABLE}}}}
-
-## Deep Dive: Why This Matters
-
-The performance gap we're seeing isn't marginal - it's substantial enough to drive material business impact. For NRx forecasting, this level of accuracy improvement translates to:
-- Better resource allocation across territories
-- More accurate revenue projections
-- Earlier detection of market trends
-
-The story here is about model maturity. {{{{BEST_MODEL}}}} has benefited from extensive hyperparameter tuning and feature engineering, while competitors are still using default configurations.
-
-## Strategic Recommendations
-
-1. **Immediate Deployment**: Deploy {{{{BEST_MODEL}}}} to production for Q1 forecasting
-2. **Monitor Performance**: Track actual vs predicted to ensure gains persist
-3. **Knowledge Transfer**: Document what makes {{{{BEST_MODEL}}}} successful for future model development
-4. **Sunset Alternatives**: Phase out underperforming models to reduce maintenance overhead
-
----
-
-**NOW YOUR TURN:**
-Generate similarly rich, dynamic insights based on the story provided. Make it compelling, insightful, and actionable.
+CRITICAL:
+- Produce insights using placeholders (e.g., {{BEST_MODEL}}, {{NUM_MODELS}})
+- Do NOT invent numbers; always use placeholders.
+- Structure: Executive Summary, Key Findings, Deep Dive, Recommendations
 """
-    
+
+    # ---------- GET TEMPLATE FROM LLM ----------
     try:
-        # Get insights from LLM (with story, no raw data)
-        response = llm.invoke(prompt)
-        insight_template = response.content
-        
-        print(f"[Insight Gen] Generated insight template (length: {len(insight_template)})")
-        
-        # === STEP 3: Fill placeholders with actual computed values ===
-        
-        filled_insights = fill_template_placeholders(insight_template, analysis_results)
-        
-        print(f"[Insight Gen] Filled insights (length: {len(filled_insights)})")
-        
+        llm_response = llm.invoke(prompt)
+        template = llm_response.content
     except Exception as e:
-        print(f"[Insight Gen] Error: {e}")
-        import traceback
-        traceback.print_exc()
-        
-        # Fallback: Generate simple summary from story
-        filled_insights = f"""# Analysis Results
+        print(f"[InsightGeneration] LLM failed: {e}")
+        template = "NO_TEMPLATE_GENERATED"
 
-{story}
+    # ---------- BUILD FLATTENED PLACEHOLDER MAP ----------
+    # Aggregator already merges flat values into computed_values
+    computed_values = analysis_results.get("computed_values", {}) or {}
 
-## Data Summary
+    # Create FINAL flat mapping: uppercase keys → primitive/fillable values
+    flat_map = {}
+    for key, val in computed_values.items():
+        if isinstance(val, (str, int, float, bool)):
+            flat_map[key.upper()] = val
+        elif isinstance(val, list):
+            flat_map[key.upper()] = val
+        elif isinstance(val, dict):
+            # include simple dict values as separate placeholders
+            for subk, subv in val.items():
+                if isinstance(subv, (str, int, float, bool)):
+                    flat_map[subk.upper()] = subv
 
-Analysis completed with available data. See visualizations for detailed breakdown.
-"""
-    
-    # === STEP 4: Store in memory ===
-    session_id = state.get('session_id', 'default_session')
-    turn_number = state.get('turn_number', 1)
-    user_query = state.get('user_query', '')
-    
+    # ensure expected placeholders exist even if empty
+    for expected in ["BEST_MODEL", "NUM_MODELS", "NUM_WITH_DRIFT", "BEST_METRIC_VALUE"]:
+        flat_map.setdefault(expected, f"[MISSING:{expected}]")
+
+    # ---------- FILL TEMPLATE ----------
     try:
-        print(f"Storing turn {turn_number} in conversation memory...")
-        
-        from core.memory_manager import get_memory_manager
-        memory_manager = get_memory_manager()
-        
-        success = memory_manager.store_insight(
-            session_id=session_id,
-            turn_number=turn_number,
-            user_query=user_query,
-            insight_text=filled_insights
+        filled = fill_template_placeholders(
+            template,
+            {"computed_values": flat_map},
+            strict=False
         )
-        
-        if success:
-            print(f"✓ Stored turn {turn_number} in conversation memory")
-        else:
-            print(f"✗ Failed to store turn {turn_number}, continuing anyway")
-        
+
     except Exception as e:
-        print(f"Memory storage failed (non-critical): {e}")
-    
-    # Extract models for context
-    extracted_models = extract_model_names_from_text(filled_insights)
-    
+        print(f"[InsightGeneration] Placeholder filling failed: {e}")
+        filled = template
+
+    # ---------- STORE IN MEMORY ----------
+    try:
+        from core.memory_manager import get_memory_manager
+        mem = get_memory_manager()
+        mem.store_insight(
+            session_id=state.get("session_id","default_session"),
+            turn_number=state.get("turn_number",1),
+            user_query=state.get("user_query",""),
+            insight_text=filled
+        )
+    except Exception as e:
+        print(f"[InsightGeneration] memory store failed: {e}")
+
+    extracted_models = extract_model_names_from_text(filled)
+
     return {
-        "messages": [AIMessage(content=filled_insights)],
-        "final_insights": filled_insights,
+        "messages": [AIMessage(content=filled)],
+        "final_insights": filled,
         "rendered_charts": rendered_charts,
         "execution_path": execution_path,
-        "mentioned_models": extracted_models if extracted_models else None,
-        "last_query_summary": state.get('last_query_summary')
+        "mentioned_models": extracted_models or None
     }
+
 
 def orchestrator_agent(state: AgentState) -> dict:
     needs_clarification = state.get('needs_clarification', False)
