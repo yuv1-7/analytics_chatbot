@@ -1261,6 +1261,9 @@ Reference these charts naturally in your explanation.
             chunk_preview = summary.get('insight_chunk', '')[:300] + "..."
             conversation_context += f"\nTurn {summary['turn']}: {chunk_preview}\n"
     
+    # Extract story elements - initialize with empty dict if not present
+    story_elements = analysis_results.get('story_elements', {})
+    
     # Handle memory-only queries (no database)
     if not needs_database and conversation_summaries:
         prompt = f"""Answer the user's question using conversation history.
