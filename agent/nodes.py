@@ -1236,6 +1236,7 @@ def insight_generation_agent(state: AgentState) -> dict:
     - Ensures flattened computed_values feed the filler
     - Fixes indentation issues
     - Guarantees no missing story_elements crashes
+    - FIXED: flat_map computed before prompt
     """
     execution_path = state.get('execution_path', [])
     execution_path.append('insight_generation')
@@ -1249,6 +1250,26 @@ def insight_generation_agent(state: AgentState) -> dict:
     # ---------- STORY ELEMENTS ----------
     story = analysis_results.get("story") or "NO_STORY: Analysis did not generate narrative."
     story_elements = analysis_results.get("story_elements") or {}
+
+    # ---------- BUILD FLATTENED PLACEHOLDER MAP FIRST ----------
+    computed_values = analysis_results.get("computed_values", {}) or {}
+
+    # Create FINAL flat mapping: uppercase keys → primitive/fillable values
+    flat_map = {}
+    for key, val in computed_values.items():
+        if isinstance(val, (str, int, float, bool)):
+            flat_map[key.upper()] = val
+        elif isinstance(val, list):
+            flat_map[key.upper()] = val
+        elif isinstance(val, dict):
+            # include simple dict values as separate placeholders
+            for subk, subv in val.items():
+                if isinstance(subv, (str, int, float, bool)):
+                    flat_map[subk.upper()] = subv
+
+    # ensure expected placeholders exist even if empty
+    for expected in ["BEST_MODEL", "NUM_MODELS", "NUM_WITH_DRIFT", "BEST_METRIC_VALUE"]:
+        flat_map.setdefault(expected, f"[MISSING:{expected}]")
 
     # ---------- VISUALIZATION CONTEXT ----------
     viz_context = ""
@@ -1282,7 +1303,7 @@ def insight_generation_agent(state: AgentState) -> dict:
         if snip:
             domain_context = "\n\n".join(snip)
 
-    # ---------- LLM PROMPT FOR TEMPLATE ----------
+    # ---------- LLM PROMPT FOR TEMPLATE (flat_map is now defined) ----------
     prompt = f"""
 You are a pharma analytics expert producing stakeholder insights.
 
@@ -1313,18 +1334,18 @@ CRITICAL PLACEHOLDER RULES:
 1. ONLY use placeholders that exist in "Computed Values" above
 2. If a placeholder is not in Computed Values, write the text WITHOUT using that placeholder
 3. For missing values, use descriptive text instead:
-   - Instead of "{{NUM_METRICS}} metrics", write "several key metrics"
-   - Instead of "{{SECOND_BEST_MODEL}}", write "another strong model"
-   - Instead of "{{ALTERNATE_MODEL}}", write "an alternative model"
+   - Instead of "{{{{NUM_METRICS}}}} metrics", write "several key metrics"
+   - Instead of "{{{{SECOND_BEST_MODEL}}}}", write "another strong model"
+   - Instead of "{{{{ALTERNATE_MODEL}}}}", write "an alternative model"
 
 APPROVED PLACEHOLDERS (verify these exist in Computed Values):
 {", ".join(flat_map.keys())}
 
 Example - GOOD:
-"The ensemble achieved {{BEST_RMSE}} RMSE, outperforming the second-best model by a moderate margin."
+"The ensemble achieved {{{{BEST_RMSE}}}} RMSE, outperforming the second-best model by a moderate margin."
 
 Example - BAD (if SECOND_BEST_MODEL not in Computed Values):
-"{{SECOND_BEST_MODEL}} excelled in MAPE"
+"{{{{SECOND_BEST_MODEL}}}} excelled in MAPE"
 
 Example - FIXED (write naturally without placeholder):
 "Another model excelled in MAPE, providing stable percentage error estimates"
@@ -1335,6 +1356,7 @@ Structure your response with:
 - Deep Dive (detailed analysis)
 - Recommendations (actionable)
 """
+    
     # ---------- GET TEMPLATE FROM LLM ----------
     try:
         llm_response = llm.invoke(prompt)
@@ -1342,27 +1364,6 @@ Structure your response with:
     except Exception as e:
         print(f"[InsightGeneration] LLM failed: {e}")
         template = "NO_TEMPLATE_GENERATED"
-
-    # ---------- BUILD FLATTENED PLACEHOLDER MAP ----------
-    # Aggregator already merges flat values into computed_values
-    computed_values = analysis_results.get("computed_values", {}) or {}
-
-    # Create FINAL flat mapping: uppercase keys → primitive/fillable values
-    flat_map = {}
-    for key, val in computed_values.items():
-        if isinstance(val, (str, int, float, bool)):
-            flat_map[key.upper()] = val
-        elif isinstance(val, list):
-            flat_map[key.upper()] = val
-        elif isinstance(val, dict):
-            # include simple dict values as separate placeholders
-            for subk, subv in val.items():
-                if isinstance(subv, (str, int, float, bool)):
-                    flat_map[subk.upper()] = subv
-
-    # ensure expected placeholders exist even if empty
-    for expected in ["BEST_MODEL", "NUM_MODELS", "NUM_WITH_DRIFT", "BEST_METRIC_VALUE"]:
-        flat_map.setdefault(expected, f"[MISSING:{expected}]")
 
     # ---------- FILL TEMPLATE ----------
     try:
@@ -1398,7 +1399,6 @@ Structure your response with:
         "execution_path": execution_path,
         "mentioned_models": extracted_models or None
     }
-
 
 def orchestrator_agent(state: AgentState) -> dict:
     needs_clarification = state.get('needs_clarification', False)
