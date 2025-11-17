@@ -34,6 +34,12 @@ class PlaceholderFiller:
         
         # Extract analysis type
         analysis_type = self.analysis_results.get('analysis_type', 'general')
+        # Handle new narrative structure if present
+        narrative_structure = self.analysis_results.get('narrative_structure', {})
+        if narrative_structure:
+            # Extract story elements from narrative structure for placeholder filling
+            story_elements = narrative_structure.get('key_findings', [])
+            self.analysis_results['story_elements'] = story_elements
         
         # Route to appropriate filler
         if analysis_type == 'performance_comparison':

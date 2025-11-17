@@ -7,6 +7,7 @@ import pandas as pd
 import numpy as np
 from typing import Dict, Any, List, Optional
 from datetime import datetime
+from core.advanced_story_generator import AdvancedStoryGenerator
 
 
 class AnalysisAggregator:
@@ -880,17 +881,22 @@ class AnalysisAggregator:
             'computed_values': {}
         }
 
-
 def analyze_data(data: List[Dict], query_context: Dict) -> Dict[str, Any]:
     """
-    Main entry point for story-based analysis
-    
-    Args:
-        data: Raw SQL query results
-        query_context: Parsed intent and context
-    
-    Returns:
-        Analysis with rich narrative story + computed values
+    Main entry point - now with advanced story generation
     """
+    # Use advanced story generator
+    story_gen = AdvancedStoryGenerator(data, query_context)
+    narrative_structure = story_gen.generate_comprehensive_story()
+    
+    # Also compute values for placeholders
     aggregator = AnalysisAggregator(data, query_context)
-    return aggregator.analyze()
+    basic_analysis = aggregator.analyze()
+    
+    # Merge both approaches
+    return {
+        **basic_analysis,
+        'narrative_structure': narrative_structure,
+        'analysis_type': basic_analysis.get('analysis_type', 'general'),
+        'computed_values': basic_analysis.get('computed_values', {})
+    }

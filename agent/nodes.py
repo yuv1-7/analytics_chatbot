@@ -1337,11 +1337,17 @@ Generate your response.
    - Provide strategic recommendations
    - Make it engaging and actionable
 
-2. **Use Placeholders for Specific Values:**
-   - For model names: {{{{BEST_MODEL}}}}, {{{{MODEL_1}}}}, {{{{MODEL_2}}}}
-   - For metrics: {{{{METRIC_VALUE}}}}, {{{{BEST_RMSE}}}}, {{{{GAP_PERCENT}}}}
-   - For counts: {{{{NUM_MODELS}}}}, {{{{NUM_WITH_DRIFT}}}}
-   - For tables: {{{{RANKINGS_TABLE}}}}, {{{{COMPARISON_TABLE}}}}
+2. You MUST only use these placeholders, exactly as written:
+
+{{BEST_MODEL}}
+{{NUM_MODELS}}
+{{BEST_METRIC_NAME}}
+{{BEST_METRIC_VALUE}}
+{{METRIC_RANKINGS_TABLE}}
+{{PERFORMANCE_SUMMARY_TABLE}}
+
+Do not invent any new placeholders.
+Do not use lowercase placeholders.
    
 3. **Write Professionally** - Clear, confident, actionable
 
