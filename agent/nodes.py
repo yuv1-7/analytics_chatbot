@@ -616,48 +616,54 @@ PARSED INTENT:
 
 CRITICAL INSTRUCTIONS:
 
-1. **Query Type Detection:**
-   - "tell me about models", "show me models", "what models" → List all models with metrics
-   - "compare models" → Compare specific models across metrics
-   - "which model is best" → Rank models by performance
+⚠️ **MANDATORY FOR ALL PERFORMANCE QUERIES**: ⚠️
+When comparison_type = "performance" OR query asks about models, YOU MUST:
+1. JOIN to latest_model_executions AND performance_metrics tables
+2. Include AVG() aggregations for ALL relevant metrics
+3. Use FILTER clause to separate metrics by data_split
+4. Return ONE ROW per model with ALL metrics as columns (WIDE format)
 
-2. **Use AGGREGATION for metrics:**
+❌ NEVER return just model metadata without metrics for performance queries
+✅ ALWAYS include metric columns like avg_test_rmse, avg_test_auc, etc.
+
+1. **Query Type Detection:**
+   - "tell me about models", "show me models", "what models", "list models" → 
+     **MUST include performance metrics** (not just metadata)
+   - These queries REQUIRE metrics even if not explicitly asked
+   
+2. **Metric Selection by Use Case:**
+   - NRx_forecasting → RMSE, MAE, R2 (regression metrics)
+   - HCP_engagement → AUC_ROC, Accuracy, Precision, Recall (classification metrics)
+   - Default → Include both types
+
+3. **Use AGGREGATION for metrics:**
    - Use AVG() with FILTER to get one row per model
    - Example: `AVG(pm.metric_value) FILTER (WHERE pm.metric_name = 'rmse') as avg_rmse`
-   - This creates WIDE format: [model_name, avg_rmse, avg_r2, avg_mae, ...]
+   - This creates WIDE format: [model_name, avg_test_rmse, avg_test_r2, avg_test_mae, ...]
 
-3. **Required JOINs:**
+4. **Required JOINs for performance queries:**
    - Always start with `FROM models m`
    - Use `LEFT JOIN latest_model_executions lme` (not INNER JOIN!)
    - Use `LEFT JOIN performance_metrics pm` to get metrics
    - LEFT JOINs ensure we don't lose models that have no metrics
 
-4. **Filtering:**
+5. **Filtering:**
    - Always include `WHERE m.is_active = true`
    - Use ILIKE for case-insensitive matching: `m.use_case ILIKE '%nrx%'`
    - For model names, use broad patterns: `m.model_name ILIKE '%random%'`
    - Add `AND pm.data_split = 'test'` when querying performance_metrics
 
-5. **Grouping:**
+6. **Grouping:**
    - GROUP BY: m.model_name, m.model_type, m.algorithm, m.use_case
    - Add HAVING clause to ensure models have executions: `HAVING COUNT(DISTINCT lme.execution_id) > 0`
-
-6. **Metric Selection:**
-   - ALWAYS include: rmse, mae, r2_score (for regression)
-   - OPTIONAL: auc_roc, accuracy, precision, recall (for classification)
-   - Use FILTER clause for each metric
 
 7. **Performance:**
    - Add `LIMIT 100` to prevent huge result sets
    - Use indexes: Always filter on is_active first
 
-8. **Personalized Context:**
-{f"   IMPORTANT: User mentioned these specific terms: {personalized_context_section[:200]}" if personalized_context_section else ""}
-
 EXAMPLE QUERIES:
 
-=== Example 1: "Tell me about all models for NRx forecasting" ===
-    Example 1a: "What models have we ran for HCP engagement"
+=== Example 1: "What models have we run for HCP engagement" ===
 ```sql
 SELECT 
     m.model_name,
@@ -666,6 +672,35 @@ SELECT
     m.use_case,
     m.version,
     m.trained_date,
+    COUNT(DISTINCT lme.execution_id) as execution_count,
+    -- Classification metrics for HCP engagement
+    AVG(pm.metric_value) FILTER (WHERE pm.metric_name = 'auc_roc' AND pm.data_split = 'test') as avg_test_auc,
+    AVG(pm.metric_value) FILTER (WHERE pm.metric_name = 'accuracy' AND pm.data_split = 'test') as avg_test_accuracy,
+    AVG(pm.metric_value) FILTER (WHERE pm.metric_name = 'precision' AND pm.data_split = 'test') as avg_test_precision,
+    AVG(pm.metric_value) FILTER (WHERE pm.metric_name = 'recall' AND pm.data_split = 'test') as avg_test_recall,
+    AVG(pm.metric_value) FILTER (WHERE pm.metric_name = 'f1_score' AND pm.data_split = 'test') as avg_test_f1
+FROM models m
+LEFT JOIN latest_model_executions lme ON m.model_id = lme.model_id
+LEFT JOIN performance_metrics pm ON lme.execution_id = pm.execution_id
+WHERE m.is_active = true
+  AND m.use_case ILIKE '%hcp%engagement%'
+GROUP BY m.model_name, m.model_type, m.algorithm, m.use_case, m.version, m.trained_date
+HAVING COUNT(DISTINCT lme.execution_id) > 0
+ORDER BY avg_test_auc DESC NULLS LAST
+LIMIT 100;
+```
+
+=== Example 2: "Tell me about all models for NRx forecasting" ===
+```sql
+SELECT 
+    m.model_name,
+    m.model_type,
+    m.algorithm,
+    m.use_case,
+    m.version,
+    m.trained_date,
+    COUNT(DISTINCT lme.execution_id) as execution_count,
+    -- Regression metrics for NRx forecasting
     AVG(pm.metric_value) FILTER (WHERE pm.metric_name = 'rmse' AND pm.data_split = 'test') as avg_test_rmse,
     AVG(pm.metric_value) FILTER (WHERE pm.metric_name = 'mae' AND pm.data_split = 'test') as avg_test_mae,
     AVG(pm.metric_value) FILTER (WHERE pm.metric_name = 'r2_score' AND pm.data_split = 'test') as avg_test_r2
@@ -680,45 +715,6 @@ ORDER BY avg_test_rmse ASC NULLS LAST
 LIMIT 100;
 ```
 
-=== Example 2: "Compare Random Forest vs XGBoost" ===
-```sql
-SELECT 
-    m.model_name,
-    m.algorithm,
-    m.use_case,
-    AVG(pm.metric_value) FILTER (WHERE pm.metric_name = 'rmse' AND pm.data_split = 'test') as avg_test_rmse,
-    AVG(pm.metric_value) FILTER (WHERE pm.metric_name = 'r2_score' AND pm.data_split = 'test') as avg_test_r2,
-    AVG(pm.metric_value) FILTER (WHERE pm.metric_name = 'mae' AND pm.data_split = 'test') as avg_test_mae
-FROM models m
-LEFT JOIN latest_model_executions lme ON m.model_id = lme.model_id
-LEFT JOIN performance_metrics pm ON lme.execution_id = pm.execution_id
-WHERE m.is_active = true
-  AND (m.model_name ILIKE '%random%' OR m.model_name ILIKE '%xgb%' 
-       OR m.algorithm ILIKE '%random%' OR m.algorithm ILIKE '%xgb%')
-GROUP BY m.model_name, m.algorithm, m.use_case
-HAVING COUNT(DISTINCT lme.execution_id) > 0
-ORDER BY avg_test_rmse ASC
-LIMIT 100;
-```
-
-=== Example 3: "Show drift detection for models" ===
-```sql
-SELECT 
-    m.model_name,
-    m.use_case,
-    ddr.drift_type,
-    ddr.drift_score,
-    ddr.is_significant,
-    ddr.detected_at
-FROM models m
-JOIN latest_executions_with_drift led ON m.model_id = led.model_id
-LEFT JOIN drift_detection_results ddr ON led.execution_id = ddr.execution_id
-WHERE m.is_active = true
-  AND ddr.is_significant = true
-ORDER BY ddr.drift_score DESC
-LIMIT 100;
-```
-
 VALIDATION CHECKLIST:
 □ Starts with SELECT
 □ Uses LEFT JOIN (not INNER JOIN)
@@ -728,8 +724,11 @@ VALIDATION CHECKLIST:
 □ Has LIMIT clause
 □ Uses ILIKE for string matching
 □ Returns ONE row per model (aggregated)
+□ Includes at least 3 performance metrics for comparison queries
 
 {"🔴 RETRY MODE: Use broader filters and LEFT JOINs" if retry_count > 0 else ""}
+
+⚠️ REMINDER: For ANY query about models (even just "list models"), you MUST include performance metrics!
 
 Generate the SQL query now:
 """
