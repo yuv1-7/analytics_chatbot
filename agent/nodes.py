@@ -634,10 +634,12 @@ When comparison_type = "performance" OR query asks about models, YOU MUST:
      **MUST include performance metrics** (not just metadata)
    - These queries REQUIRE metrics even if not explicitly asked
    
-2. **Metric Selection by Use Case:**
-   - NRx_forecasting → RMSE, MAE, R2 (regression metrics)
-   - HCP_engagement → AUC_ROC, Accuracy, Precision, Recall (classification metrics)
-   - Default → Include both types
+2. Metric Selection Rules:
+- Regression metrics (rmse, mae, r2) are used across MANY use cases 
+  including NRx forecasting, market share, territory forecasting, competitor share, pricing models.
+- Therefore regression metrics DO NOT imply a specific use_case.
+- Only apply a use_case filter when the USER explicitly mentions a use_case.
+- If the user does NOT specify a use_case, return models from ALL use cases.
 
 3. **Use AGGREGATION for metrics:**
    - Use AVG() with FILTER to get one row per model
