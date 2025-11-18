@@ -1140,10 +1140,13 @@ CRITICAL VISUALIZATION RULES:
 
 def visualization_specification_agent(state: AgentState) -> dict:
     """
-    ENHANCED: Better handling of wide-format SQL results
+    ENHANCED: Better handling of wide-format SQL results with robust fallback
     
-    Wide format: [model_name, avg_test_rmse, avg_test_r2, avg_test_mae, ...]
-    Long format: [model_name, metric_name, metric_value]
+    Improvements:
+    - Handles both LONG and WIDE format data
+    - Comprehensive error handling with fallback visualizations
+    - Better column detection and validation
+    - Creates simple bar charts when LLM fails
     """
     execution_path = state.get('execution_path', [])
     execution_path.append('visualization_spec')
@@ -1153,6 +1156,7 @@ def visualization_specification_agent(state: AgentState) -> dict:
 
     personalized_context_section = get_personalized_context_section(state)
     
+    # Extract DataFrame from results
     df = None
     for result in raw_data:
         if result.get('success') and result.get('data'):
@@ -1234,9 +1238,39 @@ If data is in WIDE format (separate columns for each metric):
      "sort_ascending": true
    }}
 
+SPECIAL CASE: Simple count/execution data
+If data only has model_name and a count column (like execution_count):
+- Create a simple bar chart
+- X-axis: model_name
+- Y-axis: count column
+- Title: "Model Execution Count" or similar
+- Sort by count descending
+
 EXAMPLES:
 
-Example 1 - Wide Format (MOST COMMON NOW):
+Example 1 - Simple Count Data:
+Input: columns=['model_name', 'execution_count']
+       rows=7 (7 models)
+       
+Output:
+{{
+  "strategy": "single_chart",
+  "reason": "Simple comparison of execution counts across models",
+  "charts": [
+    {{
+      "chart_type": "bar",
+      "title": "Model Execution Count",
+      "x_axis": "model_name",
+      "y_axis": "execution_count",
+      "sort_by": "execution_count",
+      "sort_ascending": false,
+      "barmode": null,
+      "explanation": "Bar chart showing number of executions per model"
+    }}
+  ]
+}}
+
+Example 2 - Wide Format (MOST COMMON NOW):
 Input: columns=['model_name', 'avg_test_rmse', 'avg_test_r2', 'avg_test_mae']
        rows=5 (5 models)
        
@@ -1278,7 +1312,7 @@ Output:
   ]
 }}
 
-Example 2 - Long Format:
+Example 3 - Long Format:
 Input: columns=['model_name', 'metric_name', 'metric_value']
        metric_name has values: ['rmse', 'mae', 'r2']
        
@@ -1304,6 +1338,10 @@ Now analyze the actual data and generate visualization specifications.
 Return valid JSON only.
 """
     
+    # ===== TRY LLM GENERATION WITH FALLBACK =====
+    viz_spec = None
+    llm_error = None
+    
     try:
         structured_llm = llm.with_structured_output(VizSpecOutput, method="function_calling")
         viz_spec = structured_llm.invoke(prompt)
@@ -1316,50 +1354,116 @@ Return valid JSON only.
             print(f"[Viz] Validation issues: {validation_issues}")
             viz_spec.warnings.extend(validation_issues)
         
-        rendered_charts = []
-        for i, chart_spec in enumerate(viz_spec.charts, 1):
-            try:
-                print(f"[Viz] Rendering chart {i}: {chart_spec.title}")
-                fig = render_chart(df, chart_spec)
-                if fig:
-                    rendered_charts.append({
-                        'title': chart_spec.title,
-                        'figure': fig,
-                        'type': chart_spec.chart_type,
-                        'explanation': chart_spec.explanation
-                    })
-                    print(f"[Viz]   ✓ Chart {i} rendered successfully")
-                else:
-                    print(f"[Viz]   ✗ Chart {i} rendering returned None")
-            except Exception as e:
-                print(f"[Viz]   ✗ Chart {i} rendering failed: {e}")
-                import traceback
-                traceback.print_exc()
-                viz_spec.warnings.append(f"Failed to render {chart_spec.title}: {str(e)}")
-        
-        print(f"[Viz] Successfully rendered {len(rendered_charts)}/{len(viz_spec.charts)} charts")
-        
-        return {
-            "visualization_specs": [spec.dict() for spec in viz_spec.charts],
-            "rendered_charts": rendered_charts,
-            "viz_strategy": viz_spec.strategy,
-            "viz_reasoning": viz_spec.reason,
-            "viz_warnings": viz_spec.warnings,
-            "execution_path": execution_path,
-            "requires_visualization": len(rendered_charts) > 0
-        }
-    
     except Exception as e:
-        print(f"[Viz] ✗ Visualization spec generation failed: {e}")
+        print(f"[Viz] ✗ LLM viz spec generation failed: {e}")
         import traceback
         traceback.print_exc()
+        llm_error = str(e)
         
-        return {
-            "visualization_specs": [],
-            "rendered_charts": [],
-            "viz_warnings": [f"Visualization generation failed: {str(e)}"],
-            "execution_path": execution_path
-        }
+        # ===== FALLBACK: Create simple visualization =====
+        print(f"[Viz] Creating fallback visualization...")
+        
+        # Find suitable columns for simple bar chart
+        categorical_cols = [col for col in df.columns 
+                           if df[col].dtype == 'object' or df[col].dtype.name == 'category']
+        numeric_cols = [col for col in df.columns 
+                       if pd.api.types.is_numeric_dtype(df[col])]
+        
+        print(f"[Viz] Fallback - Found {len(categorical_cols)} categorical and {len(numeric_cols)} numeric columns")
+        
+        if categorical_cols and numeric_cols:
+            # Pick best columns for visualization
+            # Prefer model_name, name, or id columns for x-axis
+            x_col = None
+            for cat_col in categorical_cols:
+                if 'name' in cat_col.lower() or 'model' in cat_col.lower():
+                    x_col = cat_col
+                    break
+            if not x_col:
+                x_col = categorical_cols[0]
+            
+            # Pick first numeric column for y-axis
+            y_col = numeric_cols[0]
+            
+            # Determine sort direction based on column name
+            sort_ascending = True
+            if any(term in y_col.lower() for term in ['error', 'rmse', 'mae', 'mse', 'loss']):
+                sort_ascending = True  # Lower is better
+            elif any(term in y_col.lower() for term in ['score', 'accuracy', 'r2', 'auc', 'precision']):
+                sort_ascending = False  # Higher is better
+            else:
+                sort_ascending = False  # Default to descending for counts
+            
+            print(f"[Viz] Fallback chart: {y_col} by {x_col} (sort_ascending={sort_ascending})")
+            
+            # Create simple chart spec
+            viz_spec = VizSpecOutput(
+                strategy="single_chart",
+                reason=f"Fallback: Simple bar chart showing {y_col} by {x_col}",
+                charts=[ChartSpec(
+                    chart_type="bar",
+                    title=f"{y_col.replace('_', ' ').title()} by {x_col.replace('_', ' ').title()}",
+                    x_axis=x_col,
+                    y_axis=y_col,
+                    sort_by=y_col,
+                    sort_ascending=sort_ascending,
+                    barmode=None,
+                    explanation=f"Bar chart comparing {y_col} across different {x_col} values"
+                )],
+                warnings=[f"Using fallback visualization due to LLM error: {llm_error}"]
+            )
+        else:
+            # No suitable columns found
+            print(f"[Viz] ✗ Cannot create fallback chart: categorical={len(categorical_cols)}, numeric={len(numeric_cols)}")
+            return {
+                "visualization_specs": [],
+                "rendered_charts": [],
+                "viz_warnings": [
+                    f"Visualization failed: {llm_error}",
+                    f"No suitable columns for fallback chart (need categorical + numeric)",
+                    f"Available columns: {list(df.columns)}"
+                ],
+                "execution_path": execution_path
+            }
+    
+    # ===== RENDER CHARTS =====
+    rendered_charts = []
+    for i, chart_spec in enumerate(viz_spec.charts, 1):
+        try:
+            print(f"[Viz] Rendering chart {i}: {chart_spec.title}")
+            fig = render_chart(df, chart_spec)
+            if fig:
+                rendered_charts.append({
+                    'title': chart_spec.title,
+                    'figure': fig,
+                    'type': chart_spec.chart_type,
+                    'explanation': chart_spec.explanation
+                })
+                print(f"[Viz]   ✓ Chart {i} rendered successfully")
+            else:
+                print(f"[Viz]   ✗ Chart {i} rendering returned None")
+                viz_spec.warnings.append(f"Chart {i} ({chart_spec.title}) rendering returned None")
+        except Exception as e:
+            print(f"[Viz]   ✗ Chart {i} rendering failed: {e}")
+            import traceback
+            traceback.print_exc()
+            viz_spec.warnings.append(f"Failed to render {chart_spec.title}: {str(e)}")
+    
+    print(f"[Viz] Successfully rendered {len(rendered_charts)}/{len(viz_spec.charts)} charts")
+    
+    # If no charts were rendered but we have specs, add warning
+    if len(viz_spec.charts) > 0 and len(rendered_charts) == 0:
+        viz_spec.warnings.append("All chart rendering attempts failed. Check data types and column names.")
+    
+    return {
+        "visualization_specs": [spec.dict() for spec in viz_spec.charts],
+        "rendered_charts": rendered_charts,
+        "viz_strategy": viz_spec.strategy,
+        "viz_reasoning": viz_spec.reason,
+        "viz_warnings": viz_spec.warnings,
+        "execution_path": execution_path,
+        "requires_visualization": len(rendered_charts) > 0
+    }
 
 def validate_viz_spec(spec: VizSpecOutput, df: pd.DataFrame) -> List[str]:
     issues = []

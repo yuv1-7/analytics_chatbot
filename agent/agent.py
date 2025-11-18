@@ -103,13 +103,16 @@ def route_after_tools(state: AgentState) -> str:
     """Route after tools execute to analysis"""
     return RouteDecision.ANALYSIS.value
 
-
 def route_after_analysis(state: AgentState) -> str:
     """
     FIXED: Better detection of visualizable data for wide-format results
     
     Wide format data (model_name, avg_test_rmse, avg_test_r2, ...) 
     can be visualized even with just 2-3 models.
+    
+    Key improvements:
+    - Multiple rows with ANY numeric column is visualizable (e.g., 7 models with execution_count)
+    - Single row with 2+ numeric columns is visualizable (metric comparison)
     """
     analysis_results = state.get('analysis_results', {})
     raw_data = analysis_results.get('raw_data', [])
@@ -124,40 +127,48 @@ def route_after_analysis(state: AgentState) -> str:
             if not data or len(data) == 0:
                 continue
             
-            # For wide format: Even 1 row with multiple metric columns is visualizable
-            if len(data) >= 1:
-                # Check if data has numeric columns (metrics)
-                first_row = data[0]
-                
-                # Count numeric columns (excluding ID/name columns)
-                numeric_cols = 0
-                non_metric_cols = ['model_id', 'execution_id', 'model_name', 
-                                  'algorithm', 'use_case', 'version', 'trained_date',
-                                  'created_at', 'model_type', 'description']
-                
-                for key, value in first_row.items():
-                    if key.lower() not in non_metric_cols:
-                        # Check if it's a numeric value
-                        try:
-                            if isinstance(value, (int, float)) and value is not None:
-                                numeric_cols += 1
-                            elif isinstance(value, str):
-                                # Try to convert to float
-                                float(value)
-                                numeric_cols += 1
-                        except (ValueError, TypeError):
-                            continue
-                
-                # Decision logic:
-                # - Multiple rows (models): Always visualizable
-                # - Single row with multiple metrics: Visualizable (can show metric comparison)
-                # - Multiple models OR multiple metrics: Visualizable
-                if len(data) > 1 or numeric_cols >= 2:
-                    has_visualizable_data = True
-                    print(f"[Route] ✓ Visualizable: {len(data)} rows, {numeric_cols} metrics")
-                    break
-                else:
-                    print(f"[Route] Not visualizable: {len(data)} rows, {numeric_cols} metrics")
+            # Check if data has numeric columns (metrics)
+            first_row = data[0]
+            
+            # Count numeric columns (excluding ID/name columns)
+            numeric_cols = 0
+            non_metric_cols = ['model_id', 'execution_id', 'model_name', 
+                              'algorithm', 'use_case', 'version', 'trained_date',
+                              'created_at', 'model_type', 'description']
+            
+            for key, value in first_row.items():
+                if key.lower() not in non_metric_cols:
+                    # Check if it's a numeric value
+                    try:
+                        if isinstance(value, (int, float)) and value is not None:
+                            numeric_cols += 1
+                        elif isinstance(value, str):
+                            # Try to convert to float
+                            float(value)
+                            numeric_cols += 1
+                    except (ValueError, TypeError):
+                        continue
+            
+            # ✅ IMPROVED DECISION LOGIC:
+            # Case 1: Multiple rows (models) with at least 1 numeric column
+            #         → Visualizable (e.g., 7 models with execution_count)
+            # Case 2: Single row with 2+ numeric columns
+            #         → Visualizable (metric comparison chart)
+            # Case 3: Check if we have at least 2 data points to compare
+            #         → Either 2+ rows OR 2+ metrics
+            
+            is_multi_row_with_metrics = len(data) >= 2 and numeric_cols >= 1
+            is_single_row_multi_metrics = len(data) == 1 and numeric_cols >= 2
+            
+            if is_multi_row_with_metrics or is_single_row_multi_metrics:
+                has_visualizable_data = True
+                print(f"[Route] ✓ Visualizable: {len(data)} rows, {numeric_cols} metrics")
+                print(f"[Route]   - Multi-row with metrics: {is_multi_row_with_metrics}")
+                print(f"[Route]   - Single-row multi-metrics: {is_single_row_multi_metrics}")
+                break
+            else:
+                print(f"[Route] Not visualizable: {len(data)} rows, {numeric_cols} metrics")
+                print(f"[Route]   - Need: (2+ rows + 1+ metrics) OR (1 row + 2+ metrics)")
     
     if has_visualizable_data:
         print(f"[Route] Routing to visualization_spec")
