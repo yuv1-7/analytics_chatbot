@@ -1006,11 +1006,23 @@ def visualization_specification_agent(state: AgentState) -> dict:
     
     user_query = state['user_query']
     
+    # ===== FIX: Safe cardinality calculation =====
+    cardinality = {}
+    for col in df.columns:
+        try:
+            # Try to compute unique count
+            cardinality[col] = int(df[col].nunique())
+        except TypeError:
+            # Column contains unhashable types (dict, list)
+            # Count as high cardinality and skip
+            cardinality[col] = len(df)  # Treat as unique per row
+            print(f"[Viz] Column '{col}' contains unhashable types (dict/list), skipping cardinality")
+    
     data_summary = {
         'shape': {'rows': len(df), 'columns': len(df.columns)},
         'columns': list(df.columns),
         'dtypes': {col: str(dtype) for col, dtype in df.dtypes.items()},
-        'cardinality': {col: int(df[col].nunique()) for col in df.columns},
+        'cardinality': cardinality,
         'sample_data': df.head(5).to_dict('records')
     }
     

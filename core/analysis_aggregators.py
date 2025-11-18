@@ -257,6 +257,7 @@ class AnalysisAggregator:
         
         print(f"\n[MetricsSummary] DataFrame shape: {self.df.shape}")
         print(f"[MetricsSummary] Columns: {list(self.df.columns)}")
+        print(f"[MetricsSummary] Column dtypes:\n{self.df.dtypes}")
         print(f"[MetricsSummary] Sample row:\n{self.df.iloc[0] if len(self.df) > 0 else 'EMPTY'}")
         
         # Check if we have model_name column
@@ -290,25 +291,37 @@ class AnalysisAggregator:
         else:
             print("[MetricsSummary] Detected WIDE format (separate metric columns)")
             
-            # Identify metric columns
-            # Common patterns: avg_test_rmse, avg_test_r2, rmse, mae, r2_score, etc.
+            # Identify metric columns with improved detection
             non_metric_cols = ['model_name', 'model_type', 'model_id', 'execution_id', 
                             'algorithm', 'version', 'use_case', 'data_split', 'created_at']
             
-            # Find numeric columns that aren't in the exclusion list
+            # Find metric columns - more lenient detection
             metric_cols = []
             for col in self.df.columns:
                 if col not in non_metric_cols:
-                    # Check if column is numeric
-                    if self.df[col].dtype in ['float64', 'int64', 'float32', 'int32']:
-                        metric_cols.append(col)
+                    # Try to convert to numeric if it's object dtype
+                    col_data = self.df[col]
+                    
+                    # If object dtype, try to convert
+                    if col_data.dtype == 'object':
+                        try:
+                            col_data = pd.to_numeric(col_data, errors='coerce')
+                        except:
+                            continue
+                    
+                    # Check if it's numeric (including after conversion)
+                    if pd.api.types.is_numeric_dtype(col_data):
+                        # Check if it has any non-null numeric values
+                        if col_data.notna().sum() > 0:
+                            metric_cols.append(col)
+                            print(f"[MetricsSummary] Found metric column: {col} (dtype: {col_data.dtype})")
             
             print(f"[MetricsSummary] Found {len(metric_cols)} metric columns: {metric_cols}")
             
             if not metric_cols:
                 print("[MetricsSummary] ERROR: No numeric metric columns found!")
                 print(f"[MetricsSummary] Available columns: {list(self.df.columns)}")
-                print(f"[MetricsSummary] Column dtypes: {self.df.dtypes.to_dict()}")
+                print(f"[MetricsSummary] Sample data:\n{self.df.head(3)}")
                 return {}
             
             # Process each metric column
@@ -331,21 +344,31 @@ class AnalysisAggregator:
                     
                     # Skip null/nan values
                     if pd.isna(value):
+                        print(f"  [MetricsSummary] Skipping {model}: {metric_col} is NULL")
+                        continue
+                    
+                    # Convert to float
+                    try:
+                        value = float(value)
+                    except (ValueError, TypeError):
+                        print(f"  [MetricsSummary] Skipping {model}: Cannot convert {value} to float")
                         continue
                     
                     # In wide format, we typically have one row per model
                     # So mean = value (no aggregation needed)
                     metric_summary[model] = {
-                        "mean": float(value),
+                        "mean": value,
                         "std": 0.0,  # No std in wide format with single value
-                        "min": float(value),
-                        "max": float(value),
+                        "min": value,
+                        "max": value,
                         "count": 1,
                     }
+                    
+                    print(f"  -> Added {model}: {metric_name} = {value:.4f}")
                 
                 if metric_summary:
                     metrics_summary[metric_name] = metric_summary
-                    print(f"  -> Added {metric_name} with {len(metric_summary)} models")
+                    print(f"  -> Stored metric '{metric_name}' with {len(metric_summary)} models")
         
         print(f"\n[MetricsSummary] FINAL SUMMARY:")
         print(f"  Total metrics: {len(metrics_summary)}")
