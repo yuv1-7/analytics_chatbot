@@ -520,6 +520,17 @@ def context_retrieval_agent(state: AgentState) -> dict:
             "needs_clarification": True,
             "clarification_question": "I'm having trouble accessing conversation history. Could you provide more details or specify which turn you're referring to?"
         }
+    
+
+def is_drift_query(user_query: str) -> bool:
+    drift_keywords = [
+        "drift", "concept drift", "data drift", "performance drift",
+        "prediction drift", "detect drift", "drift score",
+        "model drifting", "drift detection"
+    ]
+    return any(k in user_query.lower() for k in drift_keywords)
+
+
 
 def sql_generation_agent(state: AgentState) -> dict:
     """
@@ -541,6 +552,85 @@ def sql_generation_agent(state: AgentState) -> dict:
     time_range = state.get('time_range')
     context_docs = state.get('context_documents', [])
     user_query = state.get('user_query', '')
+    
+
+        # === DRIFT QUERY OVERRIDE (must run before performance logic) ===
+    if is_drift_query(user_query):
+        drift_prompt = f"""
+        You are a SQL expert specializing in model drift detection.
+
+        The user is asking about MODEL DRIFT, so you MUST use the
+        `drift_detection_results` table.
+
+        RULES:
+        ... (same prompt text you already have) ...
+        USER QUESTION: {user_query}
+
+        SCHEMA:
+        {SCHEMA_CONTEXT}
+
+        Generate ONLY a PostgreSQL SELECT query.
+        """
+
+        # Call the LLM (structured) to generate SQL for drift queries
+        try:
+            structured_llm = llm.with_structured_output(SQLQuerySpec, method="function_calling")
+            try:
+                drift_result = structured_llm.invoke(drift_prompt)
+            except Exception as e:
+                # structured output failed — fallback to raw LLM text
+                print("[DRIFT] Structured output failed, falling back:", e)
+                raw = llm.invoke(drift_prompt) if hasattr(llm, "invoke") else None
+                raw_text = raw if isinstance(raw, str) else (raw.content if hasattr(raw, "content") else "")
+                sql_match = re.search(r"SELECT[\s\S]+?;", raw_text, re.IGNORECASE)
+                extracted_sql = sql_match.group(0) if sql_match else "SELECT 1;"
+                drift_result = SQLQuerySpec(
+                    sql_query=extracted_sql,
+                    query_purpose="Auto-generated Drift SQL (fallback)",
+                    expected_columns=[]
+                )
+
+            sql = drift_result.sql_query.strip() if drift_result and hasattr(drift_result, "sql_query") else None
+
+            # Minimal validation: must start with SELECT and include key drift columns
+            issues = []
+            if not sql or not sql.lower().startswith("select"):
+                issues.append("Generated output does not start with SELECT.")
+            required_cols = ["drift_type", "drift_metric", "drift_score", "is_significant", "detected_at"]
+            if sql:
+                missing = [c for c in required_cols if c not in sql.lower()]
+                if missing:
+                    issues.append(f"Missing required drift columns in SQL: {missing}")
+
+            if issues:
+                print("[DRIFT VALIDATION] Issues:", issues)
+                # Don't fail — return the SQL anyway but flag the message
+                messages = [AIMessage(content=f"Generated Drift SQL (validation warnings): {', '.join(issues)}")]
+            else:
+                messages = [AIMessage(content="Generated Drift SQL")]
+
+            return {
+                "generated_sql": sql,
+                "sql_purpose": getattr(drift_result, "query_purpose", "drift_query"),
+                "expected_columns": getattr(drift_result, "expected_columns", []),
+                "execution_path": execution_path,
+                "messages": messages
+            }
+
+        except Exception as ex:
+            print("[DRIFT] Exception while generating drift SQL:", ex)
+            import traceback
+            traceback.print_exc()
+            return {
+                "generated_sql": None,
+                "sql_purpose": "Failed to generate Drift SQL",
+                "expected_columns": [],
+                "execution_path": execution_path,
+                "messages": [AIMessage(content=f"Failed to generate Drift SQL: {str(ex)}")]
+            }
+
+
+
 
     personalized_context_section = get_personalized_context_section(state)
     
@@ -713,6 +803,41 @@ GROUP BY m.model_name, m.model_type, m.algorithm, m.use_case, m.version, m.train
 HAVING COUNT(DISTINCT lme.execution_id) > 0
 ORDER BY avg_test_rmse ASC NULLS LAST
 LIMIT 100;
+
+
+=== Example 3: Model Drift Detection ===
+SELECT
+m.model_name,
+m.model_type,
+m.use_case,
+-- Calculate drift between time periods
+AVG(CASE WHEN me.execution_date >= CURRENT_DATE - INTERVAL '7 days'
+THEN pm.metric_value END) as current_period_avg,
+AVG(CASE WHEN me.execution_date BETWEEN CURRENT_DATE - INTERVAL '30 days'
+AND CURRENT_DATE - INTERVAL '7 days'
+THEN pm.metric_value END) as baseline_avg,
+-- Drift score (percentage change)
+ABS((AVG(CASE WHEN me.execution_date >= CURRENT_DATE - INTERVAL '7 days'
+THEN pm.metric_value END) -
+AVG(CASE WHEN me.execution_date BETWEEN CURRENT_DATE - INTERVAL '30 days'
+AND CURRENT_DATE - INTERVAL '7 days'
+THEN pm.metric_value END)) /
+NULLIF(AVG(CASE WHEN me.execution_date BETWEEN CURRENT_DATE - INTERVAL '30 days'
+AND CURRENT_DATE - INTERVAL '7 days'
+THEN pm.metric_value END), 0) * 100) as drift_percentage
+FROM models m
+LEFT JOIN model_executions me ON m.model_id = me.model_id
+LEFT JOIN performance_metrics pm ON me.execution_id = pm.execution_id
+WHERE m.is_active = true
+AND m.use_case ILIKE '%nrx%'
+AND pm.metric_name = 'rmse'
+AND pm.data_split = 'test'
+AND me.execution_date >= CURRENT_DATE - INTERVAL '30 days'
+GROUP BY m.model_name, m.model_type, m.use_case
+HAVING COUNT(DISTINCT me.execution_id) >= 2
+ORDER BY drift_percentage DESC NULLS LAST;
+
+
 ```
 
 VALIDATION CHECKLIST:
