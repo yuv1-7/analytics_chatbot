@@ -1138,6 +1138,12 @@ CRITICAL VISUALIZATION RULES:
 
 
 def visualization_specification_agent(state: AgentState) -> dict:
+    """
+    ENHANCED: Better handling of wide-format SQL results
+    
+    Wide format: [model_name, avg_test_rmse, avg_test_r2, avg_test_mae, ...]
+    Long format: [model_name, metric_name, metric_value]
+    """
     execution_path = state.get('execution_path', [])
     execution_path.append('visualization_spec')
     
@@ -1153,20 +1159,24 @@ def visualization_specification_agent(state: AgentState) -> dict:
             break
     
     if df is None or df.empty:
-        print("No data for visualization")
+        print("[Viz] No data for visualization")
         return {
             "execution_path": execution_path,
             "visualization_specs": [],
             "rendered_charts": []
         }
     
+    print(f"\n[Viz] DataFrame shape: {df.shape}")
+    print(f"[Viz] Columns: {list(df.columns)}")
+    print(f"[Viz] Sample data:\n{df.head(2)}")
+    
     if len(df) > 100:
-        print(f"Limiting data from {len(df)} to 100 rows")
+        print(f"[Viz] Limiting data from {len(df)} to 100 rows")
         df = df.head(100)
     
     user_query = state['user_query']
     
-    # ===== FIX: Safe cardinality calculation =====
+    # ===== ENHANCED: Safe cardinality calculation =====
     cardinality = {}
     for col in df.columns:
         try:
@@ -1174,18 +1184,26 @@ def visualization_specification_agent(state: AgentState) -> dict:
             cardinality[col] = int(df[col].nunique())
         except TypeError:
             # Column contains unhashable types (dict, list)
-            # Count as high cardinality and skip
             cardinality[col] = len(df)  # Treat as unique per row
-            print(f"[Viz] Column '{col}' contains unhashable types (dict/list), skipping cardinality")
+            print(f"[Viz] Column '{col}' contains unhashable types, skipping")
+    
+    # ===== DETECT DATA FORMAT =====
+    is_long_format = 'metric_name' in df.columns and 'metric_value' in df.columns
+    is_wide_format = not is_long_format and len([c for c in df.columns if any(m in c.lower() for m in ['rmse', 'mae', 'r2', 'auc'])]) > 0
+    
+    print(f"[Viz] Format detection: Long={is_long_format}, Wide={is_wide_format}")
     
     data_summary = {
         'shape': {'rows': len(df), 'columns': len(df.columns)},
         'columns': list(df.columns),
         'dtypes': {col: str(dtype) for col, dtype in df.dtypes.items()},
         'cardinality': cardinality,
-        'sample_data': df.head(5).to_dict('records')
+        'sample_data': df.head(5).to_dict('records'),
+        'is_long_format': is_long_format,
+        'is_wide_format': is_wide_format
     }
     
+    # ===== ENHANCED PROMPT FOR WIDE FORMAT =====
     prompt = f"""You are a visualization expert for pharma analytics.
 
 USER QUERY: {user_query}
@@ -1193,73 +1211,90 @@ USER QUERY: {user_query}
 DATA STRUCTURE:
 {json.dumps(data_summary, indent=2, default=str)}
 
+DATA FORMAT DETECTED: {"LONG format (metric_name + metric_value)" if is_long_format else "WIDE format (separate metric columns)"}
+
 {VIZ_RULES}
 {personalized_context_section}
 
+CRITICAL INSTRUCTIONS FOR WIDE FORMAT:
+
+If data is in WIDE format (separate columns for each metric):
+1. **Each metric gets its own chart** (avoid stacking different metrics)
+2. Use model_name (or similar) on x-axis
+3. Use specific metric column on y-axis (e.g., avg_test_rmse)
+4. Sort by metric value for clarity
+5. Example spec:
+   {{
+     "chart_type": "bar",
+     "title": "RMSE Comparison Across Models",
+     "x_axis": "model_name",
+     "y_axis": "avg_test_rmse",
+     "sort_by": "avg_test_rmse",
+     "sort_ascending": true
+   }}
+
 EXAMPLES:
 
-Example 1 - Multi-metric model comparison:
-Input: columns=['model_name', 'metric_name', 'metric_value']
-       metric_name has values: ['rmse', 'mae', 'r2', 'mape']
+Example 1 - Wide Format (MOST COMMON NOW):
+Input: columns=['model_name', 'avg_test_rmse', 'avg_test_r2', 'avg_test_mae']
+       rows=5 (5 models)
+       
 Output:
 {{
   "strategy": "multiple_charts",
-  "reason": "Multiple metrics with different scales require separate charts for clarity",
+  "reason": "Wide format with multiple metrics - create separate chart for each metric",
   "charts": [
     {{
       "chart_type": "bar",
       "title": "RMSE Comparison Across Models",
       "x_axis": "model_name",
-      "y_axis": "metric_value",
-      "filter": {{"metric_name": "rmse"}},
+      "y_axis": "avg_test_rmse",
+      "sort_by": "avg_test_rmse",
+      "sort_ascending": true,
       "barmode": null,
-      "explanation": "Lower RMSE indicates better model accuracy"
+      "explanation": "Lower RMSE indicates better accuracy. Models sorted from best to worst."
     }},
     {{
       "chart_type": "bar",
       "title": "R² Score Comparison Across Models",
       "x_axis": "model_name",
-      "y_axis": "metric_value",
-      "filter": {{"metric_name": "r2"}},
+      "y_axis": "avg_test_r2",
+      "sort_by": "avg_test_r2",
+      "sort_ascending": false,
       "barmode": null,
-      "explanation": "Higher R² indicates better model fit"
+      "explanation": "Higher R² indicates better model fit. Models sorted from best to worst."
+    }},
+    {{
+      "chart_type": "bar",
+      "title": "MAE Comparison Across Models",
+      "x_axis": "model_name",
+      "y_axis": "avg_test_mae",
+      "sort_by": "avg_test_mae",
+      "sort_ascending": true,
+      "barmode": null,
+      "explanation": "Lower MAE indicates better accuracy. Models sorted from best to worst."
     }}
   ]
 }}
 
-Example 2 - Single metric comparison:
-Input: columns=['model_name', 'rmse']
+Example 2 - Long Format:
+Input: columns=['model_name', 'metric_name', 'metric_value']
+       metric_name has values: ['rmse', 'mae', 'r2']
+       
 Output:
 {{
-  "strategy": "single_chart",
-  "reason": "Single metric allows direct comparison in one chart",
+  "strategy": "multiple_charts",
+  "reason": "Multiple metrics require separate charts for clarity",
   "charts": [
     {{
       "chart_type": "bar",
-      "title": "Model Performance - RMSE",
+      "title": "RMSE Comparison",
       "x_axis": "model_name",
-      "y_axis": "rmse",
-      "sort_by": "rmse",
-      "sort_ascending": true,
-      "explanation": "Models sorted by RMSE (lower is better)"
-    }}
-  ]
-}}
-
-Example 3 - Time series:
-Input: columns=['date', 'model_name', 'metric_value']
-Output:
-{{
-  "strategy": "single_chart",
-  "reason": "Temporal data shows trends over time",
-  "charts": [
-    {{
-      "chart_type": "line",
-      "title": "Model Performance Over Time",
-      "x_axis": "date",
       "y_axis": "metric_value",
-      "color": "model_name",
-      "explanation": "Performance trends by model"
+      "filter": {{"metric_name": "rmse"}},
+      "sort_by": "metric_value",
+      "sort_ascending": true,
+      "explanation": "Lower RMSE is better"
     }}
   ]
 }}
@@ -1272,15 +1307,18 @@ Return valid JSON only.
         structured_llm = llm.with_structured_output(VizSpecOutput, method="function_calling")
         viz_spec = structured_llm.invoke(prompt)
         
+        print(f"[Viz] LLM generated {len(viz_spec.charts)} chart specs")
+        
         validation_issues = validate_viz_spec(viz_spec, df)
         
         if validation_issues:
-            print(f"Validation issues: {validation_issues}")
+            print(f"[Viz] Validation issues: {validation_issues}")
             viz_spec.warnings.extend(validation_issues)
         
         rendered_charts = []
-        for chart_spec in viz_spec.charts:
+        for i, chart_spec in enumerate(viz_spec.charts, 1):
             try:
+                print(f"[Viz] Rendering chart {i}: {chart_spec.title}")
                 fig = render_chart(df, chart_spec)
                 if fig:
                     rendered_charts.append({
@@ -1289,9 +1327,16 @@ Return valid JSON only.
                         'type': chart_spec.chart_type,
                         'explanation': chart_spec.explanation
                     })
+                    print(f"[Viz]   ✓ Chart {i} rendered successfully")
+                else:
+                    print(f"[Viz]   ✗ Chart {i} rendering returned None")
             except Exception as e:
-                print(f"Chart rendering failed: {e}")
+                print(f"[Viz]   ✗ Chart {i} rendering failed: {e}")
+                import traceback
+                traceback.print_exc()
                 viz_spec.warnings.append(f"Failed to render {chart_spec.title}: {str(e)}")
+        
+        print(f"[Viz] Successfully rendered {len(rendered_charts)}/{len(viz_spec.charts)} charts")
         
         return {
             "visualization_specs": [spec.dict() for spec in viz_spec.charts],
@@ -1304,7 +1349,7 @@ Return valid JSON only.
         }
     
     except Exception as e:
-        print(f"Visualization spec generation failed: {e}")
+        print(f"[Viz] ✗ Visualization spec generation failed: {e}")
         import traceback
         traceback.print_exc()
         
@@ -1314,7 +1359,6 @@ Return valid JSON only.
             "viz_warnings": [f"Visualization generation failed: {str(e)}"],
             "execution_path": execution_path
         }
-
 
 def validate_viz_spec(spec: VizSpecOutput, df: pd.DataFrame) -> List[str]:
     issues = []
@@ -1360,20 +1404,86 @@ def is_metrics_comparison(df: pd.DataFrame, chart: ChartSpec) -> bool:
 
 
 def render_chart(df: pd.DataFrame, spec: ChartSpec) -> Optional[go.Figure]:
+    """
+    FIXED: Better data handling and debugging for chart rendering
+    """
     try:
         plot_df = df.copy()
         
-        if spec.filter:
-            for col, val in spec.filter.items():
-                plot_df = plot_df[plot_df[col] == val]
+        # ===== DEBUG: Show what we're working with =====
+        print(f"\n[Render] Chart: {spec.title}")
+        print(f"[Render] Type: {spec.chart_type}")
+        print(f"[Render] X: {spec.x_axis}, Y: {spec.y_axis}")
+        print(f"[Render] Input data shape: {plot_df.shape}")
+        print(f"[Render] Columns: {list(plot_df.columns)}")
         
-        if len(plot_df) == 0:
-            print(f"No data after filtering for {spec.title}")
+        # ===== CRITICAL: Validate columns exist =====
+        if spec.x_axis not in plot_df.columns:
+            print(f"[Render] ERROR: X-axis column '{spec.x_axis}' not found!")
+            print(f"[Render] Available columns: {list(plot_df.columns)}")
             return None
         
+        if spec.y_axis not in plot_df.columns:
+            print(f"[Render] ERROR: Y-axis column '{spec.y_axis}' not found!")
+            print(f"[Render] Available columns: {list(plot_df.columns)}")
+            return None
+        
+        # ===== Apply filter if specified =====
+        if spec.filter:
+            print(f"[Render] Applying filter: {spec.filter}")
+            for col, val in spec.filter.items():
+                if col in plot_df.columns:
+                    plot_df = plot_df[plot_df[col] == val]
+                else:
+                    print(f"[Render] WARNING: Filter column '{col}' not found")
+        
+        print(f"[Render] Data shape after filter: {plot_df.shape}")
+        
+        if len(plot_df) == 0:
+            print(f"[Render] ERROR: No data after filtering!")
+            return None
+        
+        # ===== CRITICAL: Convert Y-axis to numeric =====
+        y_col = spec.y_axis
+        print(f"[Render] Y-axis column '{y_col}' dtype: {plot_df[y_col].dtype}")
+        print(f"[Render] Y-axis sample values: {plot_df[y_col].head().tolist()}")
+        
+        # Check for NULL values
+        null_count = plot_df[y_col].isna().sum()
+        if null_count > 0:
+            print(f"[Render] WARNING: {null_count} NULL values in Y-axis, dropping...")
+            plot_df = plot_df.dropna(subset=[y_col])
+        
+        if len(plot_df) == 0:
+            print(f"[Render] ERROR: No data after removing NULLs!")
+            return None
+        
+        # Force convert to numeric
+        try:
+            plot_df[y_col] = pd.to_numeric(plot_df[y_col], errors='coerce')
+            
+            # Check if conversion created NaNs
+            nan_count = plot_df[y_col].isna().sum()
+            if nan_count > 0:
+                print(f"[Render] WARNING: {nan_count} values couldn't convert to numeric")
+                plot_df = plot_df.dropna(subset=[y_col])
+            
+            print(f"[Render] After numeric conversion: {plot_df[y_col].head().tolist()}")
+            
+        except Exception as e:
+            print(f"[Render] ERROR: Failed to convert Y-axis to numeric: {e}")
+            return None
+        
+        if len(plot_df) == 0:
+            print(f"[Render] ERROR: No valid numeric data!")
+            return None
+        
+        # ===== Sort if requested =====
         if spec.sort_by and spec.sort_by in plot_df.columns:
+            print(f"[Render] Sorting by {spec.sort_by} (ascending={spec.sort_ascending})")
             plot_df = plot_df.sort_values(spec.sort_by, ascending=spec.sort_ascending)
         
+        # ===== Build plotly kwargs =====
         kwargs = {
             'data_frame': plot_df,
             'x': spec.x_axis,
@@ -1386,6 +1496,9 @@ def render_chart(df: pd.DataFrame, spec: ChartSpec) -> Optional[go.Figure]:
         
         if spec.facet and spec.facet in plot_df.columns:
             kwargs['facet_col'] = spec.facet
+        
+        # ===== Create chart based on type =====
+        print(f"[Render] Creating {spec.chart_type} chart...")
         
         if spec.chart_type == 'bar':
             if spec.orientation:
@@ -1408,23 +1521,103 @@ def render_chart(df: pd.DataFrame, spec: ChartSpec) -> Optional[go.Figure]:
             fig = px.histogram(**kwargs)
         
         else:
-            print(f"Unsupported chart type: {spec.chart_type}")
+            print(f"[Render] ERROR: Unsupported chart type: {spec.chart_type}")
             return None
         
+        # ===== Update layout for better visibility =====
         fig.update_layout(
             template="plotly_white",
-            height=400,
-            margin=dict(l=40, r=40, t=60, b=40),
-            font=dict(size=12)
+            height=500,  # Increased from 400
+            margin=dict(l=60, r=40, t=80, b=100),  # More space for labels
+            font=dict(size=12),
+            xaxis=dict(
+                tickangle=-45,  # Angle labels for readability
+                title=dict(font=dict(size=14, color='white')),
+                tickfont=dict(color='white')
+            ),
+            yaxis=dict(
+                title=dict(font=dict(size=14, color='white')),
+                tickfont=dict(color='white'),
+                gridcolor='rgba(128, 128, 128, 0.2)'
+            ),
+            title=dict(
+                font=dict(size=16, color='white'),
+                x=0.5,
+                xanchor='center'
+            ),
+            paper_bgcolor='rgba(0,0,0,0)',
+            plot_bgcolor='rgba(0,0,0,0)'
         )
+        
+        # ===== DEBUG: Check if data is actually plotted =====
+        print(f"[Render] Chart created successfully")
+        print(f"[Render] Data points plotted: {len(plot_df)}")
+        print(f"[Render] Y-axis range: {plot_df[y_col].min():.4f} to {plot_df[y_col].max():.4f}")
         
         return fig
     
     except Exception as e:
-        print(f"Error rendering chart '{spec.title}': {e}")
+        print(f"[Render] ERROR: Failed to render chart '{spec.title}': {e}")
         import traceback
         traceback.print_exc()
         return None
+
+
+# ===== ALSO ADD THIS VALIDATION FUNCTION =====
+
+def validate_viz_spec(spec: VizSpecOutput, df: pd.DataFrame) -> List[str]:
+    """
+    ENHANCED: Better validation with specific error messages
+    """
+    issues = []
+    
+    for chart in spec.charts:
+        chart_issues = []
+        
+        # Check all required columns exist
+        required_cols = [chart.x_axis, chart.y_axis]
+        if chart.color:
+            required_cols.append(chart.color)
+        if chart.facet:
+            required_cols.append(chart.facet)
+        
+        for col in required_cols:
+            if col not in df.columns:
+                chart_issues.append(f"Column '{col}' not found in data")
+        
+        # Check if y-axis column has numeric data
+        if chart.y_axis in df.columns:
+            y_data = df[chart.y_axis]
+            
+            # Check for NULLs
+            null_pct = (y_data.isna().sum() / len(y_data)) * 100
+            if null_pct > 50:
+                chart_issues.append(f"Y-axis '{chart.y_axis}' has {null_pct:.1f}% NULL values")
+            
+            # Check if numeric
+            try:
+                numeric_data = pd.to_numeric(y_data, errors='coerce')
+                non_numeric_pct = (numeric_data.isna().sum() / len(y_data)) * 100
+                if non_numeric_pct > 50:
+                    chart_issues.append(f"Y-axis '{chart.y_axis}' has {non_numeric_pct:.1f}% non-numeric values")
+            except:
+                chart_issues.append(f"Y-axis '{chart.y_axis}' cannot be converted to numeric")
+        
+        # Check for metric stacking issue
+        if chart.barmode == 'stack' and is_metrics_comparison(df, chart):
+            chart_issues.append(f"BLOCKED: Cannot stack different metrics - switching to grouped")
+            chart.barmode = 'group'
+        
+        # Check filter validity
+        if chart.filter:
+            filter_col = list(chart.filter.keys())[0]
+            if filter_col not in df.columns:
+                chart_issues.append(f"Filter column '{filter_col}' not found")
+        
+        if chart_issues:
+            issues.append(f"Chart '{chart.title}': {'; '.join(chart_issues)}")
+    
+    return issues
 
 
 def visualization_rendering_agent(state: AgentState) -> dict:

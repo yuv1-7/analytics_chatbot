@@ -105,21 +105,66 @@ def route_after_tools(state: AgentState) -> str:
 
 
 def route_after_analysis(state: AgentState) -> str:
+    """
+    FIXED: Better detection of visualizable data for wide-format results
+    
+    Wide format data (model_name, avg_test_rmse, avg_test_r2, ...) 
+    can be visualized even with just 2-3 models.
+    """
     analysis_results = state.get('analysis_results', {})
     raw_data = analysis_results.get('raw_data', [])
     
     has_visualizable_data = False
+    
     for result in raw_data:
         if result.get('success') and result.get('data'):
-            if len(result['data']) > 1:
-                has_visualizable_data = True
-                break
+            data = result['data']
+            
+            # Check if we have rows
+            if not data or len(data) == 0:
+                continue
+            
+            # For wide format: Even 1 row with multiple metric columns is visualizable
+            if len(data) >= 1:
+                # Check if data has numeric columns (metrics)
+                first_row = data[0]
+                
+                # Count numeric columns (excluding ID/name columns)
+                numeric_cols = 0
+                non_metric_cols = ['model_id', 'execution_id', 'model_name', 
+                                  'algorithm', 'use_case', 'version', 'trained_date',
+                                  'created_at', 'model_type', 'description']
+                
+                for key, value in first_row.items():
+                    if key.lower() not in non_metric_cols:
+                        # Check if it's a numeric value
+                        try:
+                            if isinstance(value, (int, float)) and value is not None:
+                                numeric_cols += 1
+                            elif isinstance(value, str):
+                                # Try to convert to float
+                                float(value)
+                                numeric_cols += 1
+                        except (ValueError, TypeError):
+                            continue
+                
+                # Decision logic:
+                # - Multiple rows (models): Always visualizable
+                # - Single row with multiple metrics: Visualizable (can show metric comparison)
+                # - Multiple models OR multiple metrics: Visualizable
+                if len(data) > 1 or numeric_cols >= 2:
+                    has_visualizable_data = True
+                    print(f"[Route] ✓ Visualizable: {len(data)} rows, {numeric_cols} metrics")
+                    break
+                else:
+                    print(f"[Route] Not visualizable: {len(data)} rows, {numeric_cols} metrics")
     
     if has_visualizable_data:
+        print(f"[Route] Routing to visualization_spec")
         return RouteDecision.VIZ_SPEC.value
     
+    print(f"[Route] No visualizable data, routing to insights")
     return RouteDecision.INSIGHTS.value
-
 
 def route_after_viz_spec(state: AgentState) -> str:
     """Route after visualization spec to rendering or insights"""
