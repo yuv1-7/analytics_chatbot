@@ -626,8 +626,7 @@ When comparison_type = "performance" OR query asks about models, YOU MUST:
 3. Use FILTER clause to separate metrics by data_split
 4. Return ONE ROW per model with ALL metrics as columns (WIDE format)
 
-❌ NEVER return just model metadata without metrics for performance queries
-✅ ALWAYS include metric columns like avg_test_rmse, avg_test_auc, etc.
+NEVER return just model metadata without metrics for performance queries, include metric columns like avg_test_rmse, avg_test_auc, etc.
 
 1. **Query Type Detection:**
    - "tell me about models", "show me models", "what models", "list models" → 
