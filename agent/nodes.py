@@ -290,6 +290,9 @@ Examples:
 - "which models" → comparison_type=performance (show all models)
 
 Extract all relevant information. BE GENEROUS with assumptions when context exists.
+You MUST include all fields defined in the structured model.
+If you cannot infer a field, set it to null.
+NEVER omit fields.
 """
     
     structured_llm = llm.with_structured_output(ParsedIntent, method="function_calling")
@@ -728,7 +731,9 @@ VALIDATION CHECKLIST:
 
 {"🔴 RETRY MODE: Use broader filters and LEFT JOINs" if retry_count > 0 else ""}
 
-⚠️ REMINDER: For ANY query about models (even just "list models"), you MUST include performance metrics!
+You MUST include all fields defined in the structured model.
+If you cannot infer a field, set it to null.
+NEVER omit fields.
 
 Generate the SQL query now:
 """
