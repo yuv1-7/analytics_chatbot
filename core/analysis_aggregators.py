@@ -3,6 +3,8 @@ analysis_aggregators.py
 
 Deterministic analysis that generates narrative "stories" and computed values suitable
 for LLM consumption + template placeholder filling.
+
+COMPLETE COVERAGE for all possible pharma analytics queries.
 """
 
 import pandas as pd
@@ -12,22 +14,64 @@ from datetime import datetime
 
 
 class AnalysisAggregator:
-    """Deterministic analysis that generates narrative stories and standardized computed values."""
+    """Deterministic analysis with automatic column normalization"""
 
     def __init__(self, data: List[Dict], query_context: Dict):
+        self.raw_data = data
         self.df = pd.DataFrame(data) if data else pd.DataFrame()
         self.context = query_context or {}
         self.analysis_results: Dict[str, Any] = {}
+        
+        # Normalize column names
+        if not self.df.empty:
+            self._normalize_columns()
+    
+    def _normalize_columns(self):
+        """Normalize column names to expected format"""
+        column_mappings = {
+            # Common variations
+            'name': 'model_name',
+            'modelname': 'model_name',
+            'model': 'model_name',
+            'type': 'model_type',
+            'modeltype': 'model_type',
+            'metric': 'metric_name',
+            'metricname': 'metric_name',
+            'value': 'metric_value',
+            'metricvalue': 'metric_value',
+            'split': 'data_split',
+            'datasplit': 'data_split',
+            
+            # Metric-specific columns (if in wide format)
+            'test_rmse': 'rmse',
+            'test_mae': 'mae',
+            'test_r2': 'r2_score',
+            'test_auc': 'auc_roc',
+            'val_rmse': 'rmse',
+            'val_mae': 'mae',
+        }
+        
+        # Rename columns (case-insensitive)
+        rename_dict = {}
+        for col in self.df.columns:
+            col_lower = col.lower().replace('_', '').replace(' ', '')
+            if col_lower in column_mappings:
+                rename_dict[col] = column_mappings[col_lower]
+        
+        if rename_dict:
+            self.df.rename(columns=rename_dict, inplace=True)
+            print(f"[Aggregator] Normalized columns: {rename_dict}")
 
     def analyze(self) -> Dict[str, Any]:
         """
-        Main analysis dispatcher.
+        Main analysis dispatcher - called by analysis node after LLM decides which type.
+        
         Returns a dict with:
             - analysis_type: str
             - story: str
             - computed_values: dict (flattened placeholders)
             - story_elements: dict
-            - any other metadata (e.g., models_analyzed)
+            - raw_metrics: dict (exact values for user display)
         """
         if self.df.empty:
             return self._empty_result()
@@ -35,6 +79,7 @@ class AnalysisAggregator:
         comparison_type = self.context.get("comparison_type", "general")
         use_case = self.context.get("use_case", "")
 
+        # Route to appropriate aggregator
         if comparison_type == "performance":
             return self._analyze_model_performance()
         elif comparison_type == "drift":
@@ -43,8 +88,22 @@ class AnalysisAggregator:
             return self._analyze_ensemble_vs_base()
         elif comparison_type == "feature_importance":
             return self._analyze_feature_importance()
-        elif "uplift" in str(use_case).lower():
+        elif "uplift" in str(use_case).lower() or comparison_type == "uplift":
             return self._analyze_uplift()
+        elif "territory" in str(use_case).lower():
+            return self._analyze_territory_performance()
+        elif "market" in str(use_case).lower():
+            return self._analyze_market_share()
+        elif "price" in str(use_case).lower():
+            return self._analyze_price_sensitivity()
+        elif "competitor" in str(use_case).lower():
+            return self._analyze_competitor_share()
+        elif "clustering" in str(use_case).lower():
+            return self._analyze_clustering()
+        elif comparison_type == "predictions":
+            return self._analyze_predictions()
+        elif comparison_type == "versions":
+            return self._analyze_version_comparison()
         else:
             return self._analyze_general()
 
@@ -163,11 +222,15 @@ class AnalysisAggregator:
     # PERFORMANCE ANALYSIS
     # -------------------------
     def _analyze_model_performance(self) -> Dict[str, Any]:
+        """Comprehensive model performance comparison"""
         metrics_summary = self._compute_metrics_summary()
         rankings = self._compute_rankings(metrics_summary)
         story = self._generate_performance_story(metrics_summary, rankings)
         story_elements = self._extract_performance_story_elements(metrics_summary, rankings)
         computed_values = self._build_computed_values(metrics_summary, rankings)
+
+        # Create raw_metrics for exact user display
+        raw_metrics = self._extract_raw_metrics(metrics_summary, rankings)
 
         # Standardize/flatten
         flat = self._standardize_placeholders(computed_values, rankings=rankings, metrics_summary=metrics_summary)
@@ -178,51 +241,125 @@ class AnalysisAggregator:
             "story": story,
             "story_elements": story_elements,
             "computed_values": merged,
+            "raw_metrics": raw_metrics,
             "models_analyzed": list(self.df["model_name"].unique()) if "model_name" in self.df.columns else [],
         }
 
     def _compute_metrics_summary(self) -> Dict[str, Any]:
+        """
+        Compute metrics summary - FIXED to handle wide format from SQL
+        
+        Handles two formats:
+        1. LONG FORMAT: columns = [model_name, metric_name, metric_value]
+        2. WIDE FORMAT: columns = [model_name, avg_test_rmse, avg_test_r2, ...]
+        """
         metrics_summary = {}
-
-        if "metric_name" in self.df.columns:
-            # long format
+        
+        print(f"\n[MetricsSummary] DataFrame shape: {self.df.shape}")
+        print(f"[MetricsSummary] Columns: {list(self.df.columns)}")
+        print(f"[MetricsSummary] Sample row:\n{self.df.iloc[0] if len(self.df) > 0 else 'EMPTY'}")
+        
+        # Check if we have model_name column
+        if 'model_name' not in self.df.columns:
+            print("[MetricsSummary] ERROR: No 'model_name' column found!")
+            return {}
+        
+        # ===== LONG FORMAT DETECTION =====
+        if "metric_name" in self.df.columns and "metric_value" in self.df.columns:
+            print("[MetricsSummary] Detected LONG format (metric_name + metric_value)")
+            
             for metric in self.df["metric_name"].unique():
                 metric_df = self.df[self.df["metric_name"] == metric]
-                if "model_name" in metric_df.columns:
-                    metric_summary = {}
-                    for model in metric_df["model_name"].unique():
-                        values = metric_df[metric_df["model_name"] == model]["metric_value"].dropna()
-                        if len(values) > 0:
-                            metric_summary[model] = {
-                                "mean": float(values.mean()),
-                                "std": float(values.std()) if len(values) > 1 else 0.0,
-                                "min": float(values.min()),
-                                "max": float(values.max()),
-                                "count": int(len(values)),
-                            }
+                metric_summary = {}
+                
+                for model in metric_df["model_name"].unique():
+                    values = metric_df[metric_df["model_name"] == model]["metric_value"].dropna()
+                    if len(values) > 0:
+                        metric_summary[model] = {
+                            "mean": float(values.mean()),
+                            "std": float(values.std()) if len(values) > 1 else 0.0,
+                            "min": float(values.min()),
+                            "max": float(values.max()),
+                            "count": int(len(values)),
+                        }
+                
+                if metric_summary:
                     metrics_summary[metric] = metric_summary
+        
+        # ===== WIDE FORMAT DETECTION =====
         else:
-            # wide format
-            metric_cols = [col for col in self.df.columns if any(m in col.lower() for m in ["rmse", "mae", "r2", "auc", "accuracy"])]
+            print("[MetricsSummary] Detected WIDE format (separate metric columns)")
+            
+            # Identify metric columns
+            # Common patterns: avg_test_rmse, avg_test_r2, rmse, mae, r2_score, etc.
+            non_metric_cols = ['model_name', 'model_type', 'model_id', 'execution_id', 
+                            'algorithm', 'version', 'use_case', 'data_split', 'created_at']
+            
+            # Find numeric columns that aren't in the exclusion list
+            metric_cols = []
+            for col in self.df.columns:
+                if col not in non_metric_cols:
+                    # Check if column is numeric
+                    if self.df[col].dtype in ['float64', 'int64', 'float32', 'int32']:
+                        metric_cols.append(col)
+            
+            print(f"[MetricsSummary] Found {len(metric_cols)} metric columns: {metric_cols}")
+            
+            if not metric_cols:
+                print("[MetricsSummary] ERROR: No numeric metric columns found!")
+                print(f"[MetricsSummary] Available columns: {list(self.df.columns)}")
+                print(f"[MetricsSummary] Column dtypes: {self.df.dtypes.to_dict()}")
+                return {}
+            
+            # Process each metric column
             for metric_col in metric_cols:
-                metric_name = metric_col.lower().replace("test_", "").replace("val_", "")
-                if "model_name" in self.df.columns:
-                    metric_summary = {}
-                    for model in self.df["model_name"].unique():
-                        values = self.df[self.df["model_name"] == model][metric_col].dropna()
-                        if len(values) > 0:
-                            metric_summary[model] = {
-                                "mean": float(values.mean()),
-                                "std": float(values.std()) if len(values) > 1 else 0.0,
-                                "min": float(values.min()),
-                                "max": float(values.max()),
-                                "count": int(len(values)),
-                            }
+                # Clean metric name: avg_test_rmse -> rmse
+                metric_name = metric_col.lower()
+                metric_name = metric_name.replace("avg_", "")
+                metric_name = metric_name.replace("test_", "")
+                metric_name = metric_name.replace("val_", "")
+                metric_name = metric_name.replace("_score", "")
+                
+                print(f"[MetricsSummary] Processing {metric_col} as {metric_name}")
+                
+                metric_summary = {}
+                
+                # For wide format, each row is one model with all metrics
+                for idx, row in self.df.iterrows():
+                    model = row["model_name"]
+                    value = row[metric_col]
+                    
+                    # Skip null/nan values
+                    if pd.isna(value):
+                        continue
+                    
+                    # In wide format, we typically have one row per model
+                    # So mean = value (no aggregation needed)
+                    metric_summary[model] = {
+                        "mean": float(value),
+                        "std": 0.0,  # No std in wide format with single value
+                        "min": float(value),
+                        "max": float(value),
+                        "count": 1,
+                    }
+                
+                if metric_summary:
                     metrics_summary[metric_name] = metric_summary
-
+                    print(f"  -> Added {metric_name} with {len(metric_summary)} models")
+        
+        print(f"\n[MetricsSummary] FINAL SUMMARY:")
+        print(f"  Total metrics: {len(metrics_summary)}")
+        for metric, models in metrics_summary.items():
+            print(f"  - {metric}: {len(models)} models")
+            # Show first model as example
+            if models:
+                first_model = list(models.keys())[0]
+                print(f"    Example: {first_model} = {models[first_model]['mean']:.4f}")
+        
         return metrics_summary
 
     def _compute_rankings(self, metrics_summary: Dict) -> Dict[str, List]:
+        """Compute rankings for each metric"""
         rankings = {}
         lower_better = ["rmse", "mae", "mse", "mape"]
 
@@ -238,6 +375,7 @@ class AnalysisAggregator:
         return rankings
 
     def _generate_performance_story(self, metrics_summary: Dict, rankings: Dict) -> str:
+        """Generate narrative story for performance comparison"""
         story_parts: List[str] = []
         num_models = len(set(model for metric in metrics_summary.values() for model in metric))
         num_metrics = len(metrics_summary)
@@ -250,7 +388,8 @@ class AnalysisAggregator:
             winner = ranked[0][0]
             winner_val = ranked[0][1]
             story_parts.append(f"\nMETRIC_STORY for {metric.upper()}:")
-            story_parts.append(f"  - WINNER: {winner} ranked first")
+            story_parts.append(f"  - WINNER: {winner} ranked first with value {winner_val:.4f}")
+            
             if len(ranked) >= 2:
                 second = ranked[1][0]
                 second_val = ranked[1][1]
@@ -276,44 +415,10 @@ class AnalysisAggregator:
             else:
                 story_parts.append(f"  - CONSISTENCY: {winner} shows HIGH variability (unstable predictions)")
 
-            if len(ranked) >= 3:
-                last_val = ranked[-1][1]
-                try:
-                    range_pct = abs((winner_val - last_val) / (last_val if last_val != 0 else 1) * 100)
-                except Exception:
-                    range_pct = 0.0
-                if range_pct > 30:
-                    story_parts.append(f"  - SPREAD: WIDE - Performance varies greatly across models (>30% range)")
-                elif range_pct > 10:
-                    story_parts.append(f"  - SPREAD: MODERATE - Models show meaningful differences (10-30% range)")
-                else:
-                    story_parts.append(f"  - SPREAD: NARROW - All models perform similarly (<10% range)")
-
-        if len(rankings) >= 2:
-            winners = [ranked[0][0] for ranked in rankings.values() if ranked]
-            if winners:
-                winner_counts = {m: winners.count(m) for m in set(winners)}
-                dominant_model = max(winner_counts, key=winner_counts.get)
-                dominance = winner_counts[dominant_model] / len(rankings)
-                story_parts.append(f"\nCROSS_METRIC_ANALYSIS:")
-                if dominance >= 0.8:
-                    story_parts.append(f"  - DOMINANCE: STRONG - {dominant_model} wins on most metrics (clear overall winner)")
-                elif dominance >= 0.5:
-                    story_parts.append(f"  - DOMINANCE: MODERATE - {dominant_model} wins on half the metrics (mixed results)")
-                else:
-                    story_parts.append(f"  - DOMINANCE: NONE - No single model dominates (highly context-dependent performance)")
-
-        best_models = set(ranked[0][0] for ranked in rankings.values() if ranked)
-        if len(best_models) == 1:
-            story_parts.append(f"\nACTIONABILITY:")
-            story_parts.append(f"  - CLARITY: HIGH - Clear single best model for deployment")
-        else:
-            story_parts.append(f"\nACTIONABILITY:")
-            story_parts.append(f"  - CLARITY: LOW - Multiple models excel at different metrics, requires business prioritization")
-
         return "\n".join(story_parts)
 
     def _extract_performance_story_elements(self, metrics_summary: Dict, rankings: Dict) -> Dict:
+        """Extract structured story elements"""
         elements = {
             "winners_by_metric": {},
             "performance_gaps": {},
@@ -360,47 +465,607 @@ class AnalysisAggregator:
         return elements
 
     def _build_computed_values(self, metrics_summary: Dict, rankings: Dict) -> Dict:
+        """Build computed values dict"""
         return {"metrics_summary": metrics_summary, "rankings": rankings, "timestamp": datetime.utcnow().isoformat()}
 
+    def _extract_raw_metrics(self, metrics_summary: Dict, rankings: Dict) -> Dict:
+        """Extract exact metric values for user display (not for LLM)"""
+        raw = {}
+        
+        for metric, model_stats in metrics_summary.items():
+            raw[metric] = {}
+            for model, stats in model_stats.items():
+                raw[metric][model] = {
+                    "mean": f"{stats['mean']:.6f}",
+                    "std": f"{stats['std']:.6f}",
+                    "min": f"{stats['min']:.6f}",
+                    "max": f"{stats['max']:.6f}",
+                    "count": stats['count']
+                }
+        
+        return raw
+
     # -------------------------
-    # DRIFT ANALYSIS (stub - keep existing implementation)
+    # DRIFT ANALYSIS
     # -------------------------
     def _analyze_drift(self) -> Dict[str, Any]:
-        # Keep your existing implementation
-        return {"analysis_type": "drift_analysis", "story": "Drift analysis placeholder", "story_elements": {}, "computed_values": {}}
+        """Analyze model drift patterns"""
+        drift_summary = {}
+        story_parts = []
+        
+        if "model_name" in self.df.columns and "drift_detected" in self.df.columns:
+            for model in self.df["model_name"].unique():
+                model_df = self.df[self.df["model_name"] == model]
+                drift_count = model_df["drift_detected"].sum()
+                total_checks = len(model_df)
+                drift_rate = (drift_count / total_checks * 100) if total_checks > 0 else 0
+                
+                avg_drift_score = model_df["drift_score"].mean() if "drift_score" in model_df.columns else 0
+                
+                drift_summary[model] = {
+                    "drift_detected": drift_count > 0,
+                    "drift_count": int(drift_count),
+                    "total_checks": int(total_checks),
+                    "drift_rate_pct": float(drift_rate),
+                    "avg_drift_score": float(avg_drift_score)
+                }
+                
+                if drift_count > 0:
+                    story_parts.append(f"MODEL_DRIFT: {model} shows drift in {drift_count}/{total_checks} checks ({drift_rate:.1f}%)")
+                    if drift_rate > 50:
+                        story_parts.append(f"  - SEVERITY: HIGH - Frequent drift detected, retraining recommended")
+                    elif drift_rate > 20:
+                        story_parts.append(f"  - SEVERITY: MODERATE - Monitor closely")
+                    else:
+                        story_parts.append(f"  - SEVERITY: LOW - Acceptable drift levels")
+        
+        story = "\n".join(story_parts) if story_parts else "No significant drift detected across models"
+        
+        computed_values = {"drift_summary": drift_summary, "timestamp": datetime.utcnow().isoformat()}
+        flat = self._standardize_placeholders(computed_values)
+        merged = {**computed_values, **flat}
+        
+        raw_metrics = {
+            "drift_details": {
+                model: {
+                    "drift_count": f"{stats['drift_count']}/{stats['total_checks']}",
+                    "drift_rate": f"{stats['drift_rate_pct']:.2f}%",
+                    "avg_score": f"{stats['avg_drift_score']:.6f}"
+                }
+                for model, stats in drift_summary.items()
+            }
+        }
+        
+        return {
+            "analysis_type": "drift_analysis",
+            "story": story,
+            "story_elements": {"drift_summary": drift_summary},
+            "computed_values": merged,
+            "raw_metrics": raw_metrics
+        }
 
     # -------------------------
-    # ENSEMBLE VS BASE (stub - keep existing implementation)
+    # ENSEMBLE VS BASE
     # -------------------------
     def _analyze_ensemble_vs_base(self) -> Dict[str, Any]:
-        # Keep your existing implementation
-        return {"analysis_type": "ensemble_vs_base", "story": "Ensemble analysis placeholder", "story_elements": {}, "computed_values": {}}
+        """Compare ensemble to base models"""
+        ensemble_metrics = {}
+        base_metrics = {}
+        
+        if "model_type" in self.df.columns and "model_name" in self.df.columns:
+            ensemble_df = self.df[self.df["model_type"] == "ensemble"]
+            base_df = self.df[self.df["model_type"] == "base_model"]
+            
+            # Get metric columns
+            metric_cols = [col for col in self.df.columns if "metric" in col.lower() or any(m in col.lower() for m in ["rmse", "mae", "r2", "auc"])]
+            
+            for col in metric_cols:
+                if col in ensemble_df.columns and col in base_df.columns:
+                    ensemble_val = ensemble_df[col].mean()
+                    base_val = base_df[col].mean()
+                    
+                    ensemble_metrics[col] = float(ensemble_val)
+                    base_metrics[col] = float(base_val)
+        
+        # Compute advantages
+        advantages = {}
+        story_parts = ["ENSEMBLE VS BASE COMPARISON:"]
+        
+        for metric in ensemble_metrics.keys():
+            ens_val = ensemble_metrics[metric]
+            base_val = base_metrics.get(metric, 0)
+            
+            if base_val != 0:
+                pct_change = ((ens_val - base_val) / abs(base_val)) * 100
+                abs_diff = ens_val - base_val
+                
+                # Determine if ensemble is better
+                lower_better = any(lb in metric.lower() for lb in ["rmse", "mae", "mse", "mape"])
+                ensemble_better = (abs_diff < 0) if lower_better else (abs_diff > 0)
+                
+                advantages[metric] = {
+                    "ensemble_value": ens_val,
+                    "base_value": base_val,
+                    "percent_change": pct_change,
+                    "absolute_diff": abs_diff,
+                    "ensemble_better": ensemble_better
+                }
+                
+                direction = "better" if ensemble_better else "worse"
+                story_parts.append(f"  - {metric.upper()}: Ensemble is {abs(pct_change):.1f}% {direction} than base models")
+        
+        story = "\n".join(story_parts)
+        
+        computed_values = {
+            "ensemble_metrics": ensemble_metrics,
+            "base_metrics": base_metrics,
+            "advantages": advantages,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+        
+        flat = self._standardize_placeholders(computed_values)
+        merged = {**computed_values, **flat}
+        
+        raw_metrics = {
+            "ensemble_exact": {k: f"{v:.6f}" for k, v in ensemble_metrics.items()},
+            "base_exact": {k: f"{v:.6f}" for k, v in base_metrics.items()},
+            "differences": {
+                k: {
+                    "absolute": f"{v['absolute_diff']:.6f}",
+                    "percentage": f"{v['percent_change']:.2f}%",
+                    "better": "Yes" if v['ensemble_better'] else "No"
+                }
+                for k, v in advantages.items()
+            }
+        }
+        
+        return {
+            "analysis_type": "ensemble_vs_base",
+            "story": story,
+            "story_elements": {"advantages": advantages},
+            "computed_values": merged,
+            "raw_metrics": raw_metrics
+        }
 
     # -------------------------
-    # FEATURE IMPORTANCE (stub - keep existing implementation)
+    # FEATURE IMPORTANCE
     # -------------------------
     def _analyze_feature_importance(self) -> Dict[str, Any]:
-        # Keep your existing implementation
-        return {"analysis_type": "feature_importance", "story": "Feature importance placeholder", "story_elements": {}, "computed_values": {}}
+        """Analyze feature importance patterns"""
+        top_features = {}
+        story_parts = ["FEATURE IMPORTANCE ANALYSIS:"]
+        
+        if "feature_name" in self.df.columns and "importance_score" in self.df.columns:
+            # Group by feature and aggregate
+            feature_groups = self.df.groupby("feature_name")["importance_score"].agg(['mean', 'std', 'count'])
+            feature_groups = feature_groups.sort_values('mean', ascending=False)
+            
+            for i, (feature, row) in enumerate(feature_groups.head(10).iterrows(), 1):
+                top_features[feature] = {
+                    "rank": i,
+                    "mean_importance": float(row['mean']),
+                    "std_importance": float(row['std']),
+                    "occurrences": int(row['count'])
+                }
+                
+                story_parts.append(f"  {i}. {feature}: {row['mean']:.4f} (appears in {int(row['count'])} models)")
+        
+        story = "\n".join(story_parts)
+        
+        computed_values = {"top_features": top_features, "timestamp": datetime.utcnow().isoformat()}
+        flat = self._standardize_placeholders(computed_values)
+        merged = {**computed_values, **flat}
+        
+        raw_metrics = {
+            "features": {
+                feat: {
+                    "rank": stats['rank'],
+                    "importance": f"{stats['mean_importance']:.6f}",
+                    "std": f"{stats['std_importance']:.6f}",
+                    "count": stats['occurrences']
+                }
+                for feat, stats in top_features.items()
+            }
+        }
+        
+        return {
+            "analysis_type": "feature_importance",
+            "story": story,
+            "story_elements": {"top_features": top_features},
+            "computed_values": merged,
+            "raw_metrics": raw_metrics
+        }
 
     # -------------------------
-    # UPLIFT ANALYSIS (stub - keep existing implementation)
+    # ADDITIONAL USE CASES
     # -------------------------
+    
     def _analyze_uplift(self) -> Dict[str, Any]:
-        # Keep your existing implementation
-        return {"analysis_type": "uplift_analysis", "story": "Uplift placeholder", "story_elements": {}, "computed_values": {}}
+        """Analyze uplift modeling results"""
+        uplift_summary = {}
+        story_parts = ["UPLIFT ANALYSIS:"]
+        
+        if "uplift_score" in self.df.columns:
+            avg_uplift = self.df["uplift_score"].mean()
+            positive_uplift = (self.df["uplift_score"] > 0).sum()
+            total = len(self.df)
+            
+            uplift_summary = {
+                "avg_uplift_score": float(avg_uplift),
+                "positive_uplift_count": int(positive_uplift),
+                "positive_uplift_pct": float((positive_uplift / total * 100) if total > 0 else 0),
+                "total_predictions": int(total)
+            }
+            
+            story_parts.append(f"  - Average uplift score: {avg_uplift:.4f}")
+            story_parts.append(f"  - {positive_uplift}/{total} predictions show positive uplift ({positive_uplift/total*100:.1f}%)")
+            
+            if "recommended_action" in self.df.columns:
+                action_counts = self.df["recommended_action"].value_counts().to_dict()
+                story_parts.append(f"  - Recommended actions: {action_counts}")
+        
+        story = "\n".join(story_parts)
+        
+        computed_values = {"uplift_summary": uplift_summary, "timestamp": datetime.utcnow().isoformat()}
+        flat = self._standardize_placeholders(computed_values)
+        merged = {**computed_values, **flat}
+        
+        raw_metrics = {
+            "uplift_exact": {
+                "avg_score": f"{uplift_summary.get('avg_uplift_score', 0):.6f}",
+                "positive_rate": f"{uplift_summary.get('positive_uplift_pct', 0):.2f}%"
+            }
+        }
+        
+        return {
+            "analysis_type": "uplift_analysis",
+            "story": story,
+            "story_elements": {"uplift_summary": uplift_summary},
+            "computed_values": merged,
+            "raw_metrics": raw_metrics
+        }
 
-    # -------------------------
-    # GENERAL ANALYSIS (stub - keep existing implementation)
-    # -------------------------
+    def _analyze_territory_performance(self) -> Dict[str, Any]:
+        """Analyze territory performance"""
+        territory_summary = {}
+        story_parts = ["TERRITORY PERFORMANCE ANALYSIS:"]
+        
+        if "entity_id" in self.df.columns and "prediction_value" in self.df.columns:
+            for territory in self.df["entity_id"].unique():
+                terr_df = self.df[self.df["entity_id"] == territory]
+                
+                territory_summary[territory] = {
+                    "avg_predicted": float(terr_df["prediction_value"].mean()),
+                    "avg_actual": float(terr_df["actual_value"].mean()) if "actual_value" in terr_df.columns else None,
+                    "prediction_count": int(len(terr_df))
+                }
+            
+            # Sort by performance
+            sorted_terr = sorted(territory_summary.items(), 
+                               key=lambda x: x[1]['avg_predicted'], 
+                               reverse=True)
+            
+            story_parts.append(f"  - Top performing territories:")
+            for terr, stats in sorted_terr[:5]:
+                story_parts.append(f"    {terr}: ${stats['avg_predicted']:,.0f} predicted")
+        
+        story = "\n".join(story_parts)
+        
+        computed_values = {"territory_summary": territory_summary, "timestamp": datetime.utcnow().isoformat()}
+        flat = self._standardize_placeholders(computed_values)
+        merged = {**computed_values, **flat}
+        
+        raw_metrics = {
+            "territories": {
+                terr: {
+                    "predicted": f"${stats['avg_predicted']:,.2f}",
+                    "actual": f"${stats['avg_actual']:,.2f}" if stats['avg_actual'] else "N/A",
+                    "count": stats['prediction_count']
+                }
+                for terr, stats in territory_summary.items()
+            }
+        }
+        
+        return {
+            "analysis_type": "territory_performance",
+            "story": story,
+            "story_elements": {"territory_summary": territory_summary},
+            "computed_values": merged,
+            "raw_metrics": raw_metrics
+        }
+
+    def _analyze_market_share(self) -> Dict[str, Any]:
+        """Analyze market share predictions"""
+        market_summary = {}
+        story_parts = ["MARKET SHARE ANALYSIS:"]
+        
+        if "prediction_value" in self.df.columns:
+            avg_share = self.df["prediction_value"].mean()
+            max_share = self.df["prediction_value"].max()
+            min_share = self.df["prediction_value"].min()
+            
+            market_summary = {
+                "avg_market_share_pct": float(avg_share),
+                "max_share_pct": float(max_share),
+                "min_share_pct": float(min_share),
+                "total_products": int(len(self.df))
+            }
+            
+            story_parts.append(f"  - Average market share: {avg_share:.1f}%")
+            story_parts.append(f"  - Range: {min_share:.1f}% to {max_share:.1f}%")
+        
+        story = "\n".join(story_parts)
+        
+        computed_values = {"market_summary": market_summary, "timestamp": datetime.utcnow().isoformat()}
+        flat = self._standardize_placeholders(computed_values)
+        merged = {**computed_values, **flat}
+        
+        raw_metrics = {
+            "market_share_exact": {
+                "average": f"{market_summary.get('avg_market_share_pct', 0):.4f}%",
+                "maximum": f"{market_summary.get('max_share_pct', 0):.4f}%",
+                "minimum": f"{market_summary.get('min_share_pct', 0):.4f}%"
+            }
+        }
+        
+        return {
+            "analysis_type": "market_share",
+            "story": story,
+            "story_elements": {"market_summary": market_summary},
+            "computed_values": merged,
+            "raw_metrics": raw_metrics
+        }
+
+    def _analyze_price_sensitivity(self) -> Dict[str, Any]:
+        """Analyze price elasticity"""
+        price_summary = {}
+        story_parts = ["PRICE SENSITIVITY ANALYSIS:"]
+        
+        if "prediction_value" in self.df.columns:
+            avg_elasticity = self.df["prediction_value"].mean()
+            
+            price_summary = {
+                "avg_elasticity": float(avg_elasticity),
+                "highly_sensitive": int((self.df["prediction_value"] < -1.5).sum()),
+                "moderately_sensitive": int(((self.df["prediction_value"] >= -1.5) & (self.df["prediction_value"] < -0.5)).sum()),
+                "inelastic": int((self.df["prediction_value"] >= -0.5).sum())
+            }
+            
+            story_parts.append(f"  - Average price elasticity: {avg_elasticity:.2f}")
+            story_parts.append(f"  - Highly sensitive segments: {price_summary['highly_sensitive']}")
+        
+        story = "\n".join(story_parts)
+        
+        computed_values = {"price_summary": price_summary, "timestamp": datetime.utcnow().isoformat()}
+        flat = self._standardize_placeholders(computed_values)
+        merged = {**computed_values, **flat}
+        
+        raw_metrics = {
+            "elasticity": {
+                "average": f"{price_summary.get('avg_elasticity', 0):.6f}",
+                "distribution": {
+                    "highly_sensitive": price_summary.get('highly_sensitive', 0),
+                    "moderate": price_summary.get('moderately_sensitive', 0),
+                    "inelastic": price_summary.get('inelastic', 0)
+                }
+            }
+        }
+        
+        return {
+            "analysis_type": "price_sensitivity",
+            "story": story,
+            "story_elements": {"price_summary": price_summary},
+            "computed_values": merged,
+            "raw_metrics": raw_metrics
+        }
+
+    def _analyze_competitor_share(self) -> Dict[str, Any]:
+        """Analyze competitor share forecasts"""
+        comp_summary = {}
+        story_parts = ["COMPETITOR SHARE ANALYSIS:"]
+        
+        if "entity_id" in self.df.columns and "prediction_value" in self.df.columns:
+            for competitor in self.df["entity_id"].unique():
+                comp_df = self.df[self.df["entity_id"] == competitor]
+                
+                comp_summary[competitor] = {
+                    "avg_share": float(comp_df["prediction_value"].mean()),
+                    "trend": "increasing" if comp_df["prediction_value"].iloc[-1] > comp_df["prediction_value"].iloc[0] else "decreasing"
+                }
+            
+            sorted_comp = sorted(comp_summary.items(), key=lambda x: x[1]['avg_share'], reverse=True)
+            
+            story_parts.append(f"  - Top competitors by share:")
+            for comp, stats in sorted_comp[:3]:
+                story_parts.append(f"    {comp}: {stats['avg_share']:.1f}% ({stats['trend']})")
+        
+        story = "\n".join(story_parts)
+        
+        computed_values = {"competitor_summary": comp_summary, "timestamp": datetime.utcnow().isoformat()}
+        flat = self._standardize_placeholders(computed_values)
+        merged = {**computed_values, **flat}
+        
+        raw_metrics = {
+            "competitors": {
+                comp: {
+                    "share": f"{stats['avg_share']:.4f}%",
+                    "trend": stats['trend']
+                }
+                for comp, stats in comp_summary.items()
+            }
+        }
+        
+        return {
+            "analysis_type": "competitor_share",
+            "story": story,
+            "story_elements": {"competitor_summary": comp_summary},
+            "computed_values": merged,
+            "raw_metrics": raw_metrics
+        }
+
+    def _analyze_clustering(self) -> Dict[str, Any]:
+        """Analyze clustering results"""
+        cluster_summary = {}
+        story_parts = ["CLUSTERING ANALYSIS:"]
+        
+        if "prediction_class" in self.df.columns:
+            cluster_counts = self.df["prediction_class"].value_counts().to_dict()
+            
+            for cluster, count in cluster_counts.items():
+                cluster_summary[cluster] = {
+                    "count": int(count),
+                    "percentage": float((count / len(self.df) * 100))
+                }
+                
+                story_parts.append(f"  - {cluster}: {count} entities ({count/len(self.df)*100:.1f}%)")
+        
+        story = "\n".join(story_parts)
+        
+        computed_values = {"cluster_summary": cluster_summary, "timestamp": datetime.utcnow().isoformat()}
+        flat = self._standardize_placeholders(computed_values)
+        merged = {**computed_values, **flat}
+        
+        raw_metrics = {
+            "clusters": {
+                cluster: {
+                    "count": stats['count'],
+                    "percentage": f"{stats['percentage']:.2f}%"
+                }
+                for cluster, stats in cluster_summary.items()
+            }
+        }
+        
+        return {
+            "analysis_type": "clustering",
+            "story": story,
+            "story_elements": {"cluster_summary": cluster_summary},
+            "computed_values": merged,
+            "raw_metrics": raw_metrics
+        }
+
+    def _analyze_predictions(self) -> Dict[str, Any]:
+        """Analyze general predictions"""
+        pred_summary = {}
+        story_parts = ["PREDICTIONS ANALYSIS:"]
+        
+        if "prediction_value" in self.df.columns:
+            pred_summary = {
+                "total_predictions": int(len(self.df)),
+                "avg_prediction": float(self.df["prediction_value"].mean()),
+                "std_prediction": float(self.df["prediction_value"].std())
+            }
+            
+            if "actual_value" in self.df.columns:
+                pred_summary["avg_actual"] = float(self.df["actual_value"].mean())
+                pred_summary["avg_error"] = float((self.df["prediction_value"] - self.df["actual_value"]).abs().mean())
+            
+            story_parts.append(f"  - Total predictions: {pred_summary['total_predictions']}")
+            story_parts.append(f"  - Average predicted value: {pred_summary['avg_prediction']:.2f}")
+        
+        story = "\n".join(story_parts)
+        
+        computed_values = {"prediction_summary": pred_summary, "timestamp": datetime.utcnow().isoformat()}
+        flat = self._standardize_placeholders(computed_values)
+        merged = {**computed_values, **flat}
+        
+        raw_metrics = {
+            "predictions_exact": {
+                k: f"{v:.6f}" if isinstance(v, float) else v
+                for k, v in pred_summary.items()
+            }
+        }
+        
+        return {
+            "analysis_type": "predictions",
+            "story": story,
+            "story_elements": {"prediction_summary": pred_summary},
+            "computed_values": merged,
+            "raw_metrics": raw_metrics
+        }
+
+    def _analyze_version_comparison(self) -> Dict[str, Any]:
+        """Analyze version comparisons"""
+        version_summary = {}
+        story_parts = ["VERSION COMPARISON ANALYSIS:"]
+        
+        if "old_version" in self.df.columns and "new_version" in self.df.columns:
+            for idx, row in self.df.iterrows():
+                model = row.get("model_name", f"model_{idx}")
+                version_summary[model] = {
+                    "old_version": row["old_version"],
+                    "new_version": row["new_version"],
+                    "verdict": row.get("performance_verdict", "unknown")
+                }
+                
+                story_parts.append(f"  - {model}: {row['old_version']} → {row['new_version']} ({row.get('performance_verdict', 'unknown')})")
+        
+        story = "\n".join(story_parts)
+        
+        computed_values = {"version_summary": version_summary, "timestamp": datetime.utcnow().isoformat()}
+        flat = self._standardize_placeholders(computed_values)
+        merged = {**computed_values, **flat}
+        
+        raw_metrics = {"versions": version_summary}
+        
+        return {
+            "analysis_type": "version_comparison",
+            "story": story,
+            "story_elements": {"version_summary": version_summary},
+            "computed_values": merged,
+            "raw_metrics": raw_metrics
+        }
+
     def _analyze_general(self) -> Dict[str, Any]:
-        # Keep your existing implementation
-        return {"analysis_type": "general", "story": "General analysis placeholder", "story_elements": {}, "computed_values": {}}
+        """General analysis for unspecified queries"""
+        summary = {
+            "total_rows": int(len(self.df)),
+            "columns": list(self.df.columns),
+            "numeric_columns": list(self.df.select_dtypes(include=[np.number]).columns)
+        }
+        
+        story_parts = ["GENERAL DATA ANALYSIS:"]
+        story_parts.append(f"  - Total rows: {summary['total_rows']}")
+        story_parts.append(f"  - Columns: {len(summary['columns'])}")
+        
+        # Basic stats on numeric columns
+        if summary['numeric_columns']:
+            for col in summary['numeric_columns'][:5]:
+                summary[f"{col}_mean"] = float(self.df[col].mean())
+                summary[f"{col}_std"] = float(self.df[col].std())
+        
+        story = "\n".join(story_parts)
+        
+        computed_values = {"general_summary": summary, "timestamp": datetime.utcnow().isoformat()}
+        flat = self._standardize_placeholders(computed_values)
+        merged = {**computed_values, **flat}
+        
+        raw_metrics = {
+            "summary": {
+                k: f"{v:.6f}" if isinstance(v, float) else v
+                for k, v in summary.items()
+            }
+        }
+        
+        return {
+            "analysis_type": "general",
+            "story": story,
+            "story_elements": {"summary": summary},
+            "computed_values": merged,
+            "raw_metrics": raw_metrics
+        }
 
     def _empty_result(self) -> Dict[str, Any]:
-        return {"analysis_type": "empty", "story": "NO_DATA: No data available for analysis.", "story_elements": {}, "computed_values": {}}
+        """Return result for empty data"""
+        return {
+            "analysis_type": "empty",
+            "story": "NO_DATA: No data available for analysis.",
+            "story_elements": {},
+            "computed_values": {"timestamp": datetime.utcnow().isoformat()},
+            "raw_metrics": {}
+        }
 
 
 def analyze_data(data: List[Dict], query_context: Dict) -> Dict[str, Any]:
+    """Main entry point for analysis"""
     aggregator = AnalysisAggregator(data, query_context)
     return aggregator.analyze()

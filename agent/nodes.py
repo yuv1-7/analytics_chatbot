@@ -759,15 +759,7 @@ class AnalysisOutput(BaseModel):
     statistical_summary: Dict[str, Any] = Field(description="Statistical summaries")
 
 def analysis_computation_agent(state: AgentState) -> dict:
-    """
-    Deterministic analysis using Python aggregators (NO LLM)
-
-    Returns structured analysis with:
-    - Computed metrics
-    - Rankings
-    - Patterns (qualitative, for LLM context)
-    - Computed values (for placeholder filling)
-    """
+    """Two-stage analysis with DEBUG logging"""
     execution_path = state.get('execution_path', [])
     execution_path.append('analysis_computation')
 
@@ -783,70 +775,115 @@ def analysis_computation_agent(state: AgentState) -> dict:
             except:
                 continue
 
-    # If no tool data available
-    if not tool_results or not any(r.get('success') for r in tool_results):
-        return {
-            "analysis_results": {
-                'analysis_type': 'empty',
-                'error': 'No data available',
-                'patterns': ['NO_DATA'],
-                'computed_values': {}
-            },
-            "execution_path": execution_path
-        }
-
-    # Extract rows into successful_data
+    # Extract successful data
     successful_data = []
     for result in tool_results:
         if result.get('success') and result.get('data'):
             successful_data.extend(result['data'])
 
-    # ===========================================
-    # AUTO-DETECT PERFORMANCE ANALYSIS REQUIREMENT
-    # ===========================================
-    try:
-        detected_metric_cols = {
-            "rmse", "mae", "mse", "mape", "r2", "r2_score",
-            "metric_name", "metric_value", "accuracy",
-            "precision", "recall", "f1_score", "auc_roc"
+    # ===== DEBUG LOGGING =====
+    print(f"\n{'='*80}")
+    print(f"[Analysis Debug] Data Inspection")
+    print(f"{'='*80}")
+    print(f"Total rows: {len(successful_data)}")
+    
+    if successful_data:
+        print(f"Sample row: {successful_data[0]}")
+        print(f"Columns: {list(successful_data[0].keys())}")
+        print(f"Column count: {len(successful_data[0].keys())}")
+        
+        # Check for expected columns
+        expected_cols = ['model_name', 'model_type', 'metric_name', 'metric_value']
+        found_cols = [col for col in expected_cols if col in successful_data[0]]
+        missing_cols = [col for col in expected_cols if col not in successful_data[0]]
+        
+        print(f"Expected columns found: {found_cols}")
+        print(f"Missing columns: {missing_cols}")
+    print(f"{'='*80}\n")
+    # ===== END DEBUG =====
+
+    if not successful_data:
+        return {
+            "analysis_results": {
+                'analysis_type': 'empty',
+                'error': 'No data returned from SQL',
+                'patterns': ['NO_DATA'],
+                'computed_values': {},
+                'raw_metrics': {}
+            },
+            "execution_path": execution_path
         }
 
-        detected_model_cols = {"model_name", "model_type"}
-
-        if successful_data:
-            lower_cols = {col.lower() for col in successful_data[0].keys()}
-
-            if (lower_cols & detected_metric_cols) or (lower_cols & detected_model_cols):
-                print("[Analysis] Auto-switching to PERFORMANCE analysis (based on SQL response)")
-                state["comparison_type"] = "performance"
-            else:
-                state["comparison_type"] = state.get("comparison_type", "general")
-        else:
-            state["comparison_type"] = "general"
-
-    except Exception as e:
-        print(f"[Analysis] Auto-detect failure: {e}")
-        state["comparison_type"] = state.get("comparison_type", "general")
-
-    # Build query context for aggregator
+    # Build query context
     query_context = {
         'user_query': state.get('user_query'),
         'comparison_type': state.get('comparison_type'),
         'use_case': state.get('use_case'),
         'models_requested': state.get('models_requested'),
-        'metrics_requested': state.get('metrics_requested')
+        'metrics_requested': state.get('metrics_requested'),
+        'data_row_count': len(successful_data),
+        'data_columns': list(successful_data[0].keys()) if successful_data else []
     }
+    
+    # LLM decision
+    analysis_decision_prompt = f"""You are an analysis router. Based on the query context, decide which analysis type to run.
 
-    # Run deterministic analysis
+USER QUERY: {query_context['user_query']}
+QUERY CONTEXT:
+- Use Case: {query_context['use_case']}
+- Comparison Type: {query_context['comparison_type']}
+- Data Available: {query_context['data_row_count']} rows
+- Data Columns: {', '.join(query_context['data_columns'])}
+
+AVAILABLE ANALYSIS TYPES:
+performance, drift, ensemble_vs_base, feature_importance, uplift, territory_performance, 
+market_share, price_sensitivity, competitor_share, clustering, predictions, versions, general
+
+DECISION RULES:
+- If columns include model_name + metric columns → "performance"
+- If use_case = "NRx_forecasting" → "performance"
+- If columns include drift-related fields → "drift"
+- Default to "performance" for model comparisons
+
+Return ONLY ONE WORD: the analysis type.
+"""
+
+    try:
+        decision_response = llm.invoke(analysis_decision_prompt)
+        analysis_type = decision_response.content.strip().lower()
+        
+        valid_types = [
+            "performance", "drift", "ensemble_vs_base", "feature_importance",
+            "uplift", "territory_performance", "market_share", "price_sensitivity",
+            "competitor_share", "clustering", "predictions", "versions", "general"
+        ]
+        
+        if analysis_type not in valid_types:
+            for vtype in valid_types:
+                if vtype in analysis_type:
+                    analysis_type = vtype
+                    break
+            else:
+                analysis_type = "performance"  # Default for NRx queries
+        
+        print(f"[Analysis] LLM selected: {analysis_type}")
+        query_context['comparison_type'] = analysis_type
+        
+    except Exception as e:
+        print(f"[Analysis] LLM decision failed: {e}, defaulting to performance")
+        analysis_type = "performance"
+        query_context['comparison_type'] = analysis_type
+
+    # Call aggregator
     from core.analysis_aggregators import analyze_data
     analysis_results = analyze_data(successful_data, query_context)
 
     analysis_results['raw_data'] = tool_results
     analysis_results['data_row_count'] = len(successful_data)
 
-    print(f"[Analysis] Type: {analysis_results.get('analysis_type')}")
-    print(f"[Analysis] Rows: {analysis_results.get('data_row_count')}")
-    print(f"[Analysis] Patterns: {analysis_results.get('patterns', [])}")
+    print(f"[Analysis] Result type: {analysis_results.get('analysis_type')}")
+    print(f"[Analysis] Story length: {len(analysis_results.get('story', ''))}")
+    print(f"[Analysis] Computed values: {list(analysis_results.get('computed_values', {}).keys())[:10]}")
 
     return {
         "analysis_results": analysis_results,
@@ -1231,12 +1268,12 @@ def visualization_rendering_agent(state: AgentState) -> dict:
 
 def insight_generation_agent(state: AgentState) -> dict:
     """
-    FINAL PATCHED VERSION
-    - Fixes placeholder substitution
-    - Ensures flattened computed_values feed the filler
-    - Fixes indentation issues
-    - Guarantees no missing story_elements crashes
-    - FIXED: flat_map computed before prompt
+    FIXED VERSION - Properly uses analysis results
+    
+    Generates insights using:
+    1. Analysis story (qualitative patterns)
+    2. Computed values (for template filling)
+    3. Raw metrics (exact values for display)
     """
     execution_path = state.get('execution_path', [])
     execution_path.append('insight_generation')
@@ -1247,31 +1284,37 @@ def insight_generation_agent(state: AgentState) -> dict:
     conversation_summaries = state.get('conversation_summaries', []) or []
     personalized_context_section = get_personalized_context_section(state)
 
-    # ---------- STORY ELEMENTS ----------
-    story = analysis_results.get("story") or "NO_STORY: Analysis did not generate narrative."
-    story_elements = analysis_results.get("story_elements") or {}
-
-    # ---------- BUILD FLATTENED PLACEHOLDER MAP FIRST ----------
+    # ========== EXTRACT ANALYSIS COMPONENTS ==========
+    story = analysis_results.get("story", "")
+    story_elements = analysis_results.get("story_elements", {}) or {}
     computed_values = analysis_results.get("computed_values", {}) or {}
-
-    # Create FINAL flat mapping: uppercase keys → primitive/fillable values
-    flat_map = {}
-    for key, val in computed_values.items():
-        if isinstance(val, (str, int, float, bool)):
-            flat_map[key.upper()] = val
-        elif isinstance(val, list):
-            flat_map[key.upper()] = val
-        elif isinstance(val, dict):
-            # include simple dict values as separate placeholders
-            for subk, subv in val.items():
-                if isinstance(subv, (str, int, float, bool)):
-                    flat_map[subk.upper()] = subv
-
-    # ensure expected placeholders exist even if empty
-    for expected in ["BEST_MODEL", "NUM_MODELS", "NUM_WITH_DRIFT", "BEST_METRIC_VALUE"]:
-        flat_map.setdefault(expected, f"[MISSING:{expected}]")
-
-    # ---------- VISUALIZATION CONTEXT ----------
+    raw_metrics = analysis_results.get("raw_metrics", {}) or {}
+    analysis_type = analysis_results.get("analysis_type", "unknown")
+    
+    print(f"\n{'='*80}")
+    print(f"[Insight Generation] Starting")
+    print(f"{'='*80}")
+    print(f"Analysis type: {analysis_type}")
+    print(f"Story length: {len(story)} chars")
+    print(f"Computed values: {len(computed_values)} keys")
+    print(f"Raw metrics: {len(raw_metrics)} keys")
+    print(f"Story elements: {list(story_elements.keys())}")
+    
+    # Check if we have actual data
+    has_data = bool(computed_values and story and story != "NO_DATA: No data available for analysis.")
+    
+    if not has_data:
+        print("[Insight Generation] WARNING: No meaningful analysis data found!")
+        return {
+            "messages": [AIMessage(content="No data available for analysis. Please check your query or database.")],
+            "final_insights": "No data available for analysis.",
+            "rendered_charts": rendered_charts,
+            "execution_path": execution_path
+        }
+    
+    # ========== BUILD CONTEXT SECTIONS ==========
+    
+    # Visualization context
     viz_context = ""
     if rendered_charts:
         parts = []
@@ -1283,7 +1326,7 @@ def insight_generation_agent(state: AgentState) -> dict:
             )
         viz_context = "\n\n".join(parts)
 
-    # ---------- CONVERSATION CONTEXT ----------
+    # Conversation context
     conv_context = ""
     if conversation_summaries:
         conv_context = "**Previous Conversation:**\n"
@@ -1292,7 +1335,7 @@ def insight_generation_agent(state: AgentState) -> dict:
             preview = txt[:300] + ("..." if len(txt)>300 else "")
             conv_context += f"- Turn {chunk.get('turn')}: {preview}\n"
 
-    # ---------- DOMAIN CONTEXT ----------
+    # Domain context
     domain_context = ""
     if context_docs:
         snip = []
@@ -1303,21 +1346,30 @@ def insight_generation_agent(state: AgentState) -> dict:
         if snip:
             domain_context = "\n\n".join(snip)
 
-    # ---------- LLM PROMPT FOR TEMPLATE (flat_map is now defined) ----------
-    prompt = f"""
-You are a pharma analytics expert producing stakeholder insights.
+    # ========== PREPARE COMPUTED VALUES FOR DISPLAY ==========
+    # Show actual values to LLM for context (not for template filling)
+    computed_values_preview = {
+        k: v for k, v in list(computed_values.items())[:20]  # First 20 to avoid token overflow
+    }
+    
+    # ========== BUILD PROMPT ==========
+    prompt = f"""You are a pharma analytics expert producing stakeholder insights.
 
-User Query:
+USER QUERY:
 {state.get('user_query')}
 
-Analysis Story:
+ANALYSIS TYPE: {analysis_type}
+
+ANALYSIS STORY (Qualitative Patterns):
 {story}
 
-Story Elements:
+STORY ELEMENTS (Structured Insights):
 {json.dumps(story_elements, indent=2)}
 
-Computed Values (Available Placeholders):
-{json.dumps(flat_map, indent=2)}
+COMPUTED VALUES SAMPLE (Available for reference):
+{json.dumps(computed_values_preview, indent=2, default=str)}
+
+NOTE: More computed values are available. Use the story and story_elements to generate insights.
 
 Domain Context:
 {domain_context}
@@ -1330,54 +1382,80 @@ Conversation:
 
 {personalized_context_section}
 
-CRITICAL PLACEHOLDER RULES:
-1. ONLY use placeholders that exist in "Computed Values" above
-2. If a placeholder is not in Computed Values, write the text WITHOUT using that placeholder
-3. For missing values, use descriptive text instead:
-   - Instead of "{{{{NUM_METRICS}}}} metrics", write "several key metrics"
-   - Instead of "{{{{SECOND_BEST_MODEL}}}}", write "another strong model"
-   - Instead of "{{{{ALTERNATE_MODEL}}}}", write "an alternative model"
+CRITICAL INSTRUCTIONS:
+1. **DO NOT say "no data" or "no models"** - The analysis has already identified patterns
+2. **Use the STORY and STORY_ELEMENTS** to generate insights
+3. **Be specific and factual** - Reference actual model names and metrics from the story
+4. **Structure your response with:**
+   - Executive Summary (2-3 sentences about what was found)
+   - Key Findings (bullet points from story_elements)
+   - Deep Dive (detailed analysis from story)
+   - Recommendations (actionable next steps)
 
-APPROVED PLACEHOLDERS (verify these exist in Computed Values):
-{", ".join(flat_map.keys())}
+5. **Reference specific models and metrics** mentioned in the story
+6. **DO NOT use placeholder syntax like {{{{BEST_MODEL}}}}** - Write naturally
+7. **Extract actual values** from the story and story_elements
 
 Example - GOOD:
-"The ensemble achieved {{{{BEST_RMSE}}}} RMSE, outperforming the second-best model by a moderate margin."
+"Our analysis of NRx forecasting models shows that XGBoost achieved the best RMSE of 32.5, 
+outperforming Random Forest (RMSE: 35.2) by 8%. The ensemble model demonstrates high consistency 
+with low variability across validation folds."
 
-Example - BAD (if SECOND_BEST_MODEL not in Computed Values):
-"{{{{SECOND_BEST_MODEL}}}} excelled in MAPE"
+Example - BAD:
+"Currently, there are no models evaluated for NRx forecasting..."
 
-Example - FIXED (write naturally without placeholder):
-"Another model excelled in MAPE, providing stable percentage error estimates"
-
-Structure your response with:
-- Executive Summary (2-3 sentences)
-- Key Findings (bullet points, use ONLY available placeholders)
-- Deep Dive (detailed analysis)
-- Recommendations (actionable)
+Generate comprehensive insights based on the analysis story and elements above.
 """
-    
-    # ---------- GET TEMPLATE FROM LLM ----------
+
+    # ========== CALL LLM ==========
     try:
         llm_response = llm.invoke(prompt)
-        template = llm_response.content
+        generated_insights = llm_response.content
+        
+        print(f"[Insight Generation] Generated {len(generated_insights)} chars of insights")
+        
     except Exception as e:
-        print(f"[InsightGeneration] LLM failed: {e}")
-        template = "NO_TEMPLATE_GENERATED"
+        print(f"[Insight Generation] LLM failed: {e}")
+        
+        # Fallback: Use story directly
+        generated_insights = f"""## Analysis Results
 
-    # ---------- FILL TEMPLATE ----------
-    try:
-        filled = fill_template_placeholders(
-            template,
-            {"computed_values": flat_map},
-            strict=False
-        )
+{story}
 
-    except Exception as e:
-        print(f"[InsightGeneration] Placeholder filling failed: {e}")
-        filled = template
+### Key Insights
+Based on the analysis, we have identified patterns in the data. Please review the visualizations and metrics for detailed findings.
+"""
 
-    # ---------- STORE IN MEMORY ----------
+    # ========== APPEND RAW METRICS FOR USER DISPLAY ==========
+    if raw_metrics:
+        metrics_display = "\n\n---\n\n## 📊 Detailed Metrics\n\n"
+        
+        # Format raw metrics nicely
+        for category, data in raw_metrics.items():
+            metrics_display += f"### {category.replace('_', ' ').title()}\n\n"
+            
+            if isinstance(data, dict):
+                # Convert to markdown table
+                if data and isinstance(list(data.values())[0], dict):
+                    # Nested dict (e.g., metric -> model -> values)
+                    for sub_key, sub_data in data.items():
+                        metrics_display += f"**{sub_key}:**\n\n"
+                        
+                        if isinstance(sub_data, dict):
+                            # Create table
+                            df = pd.DataFrame(sub_data).T
+                            metrics_display += df.to_markdown() + "\n\n"
+                        else:
+                            metrics_display += f"{sub_data}\n\n"
+                else:
+                    # Simple dict
+                    for k, v in data.items():
+                        metrics_display += f"- **{k}**: {v}\n"
+                    metrics_display += "\n"
+        
+        generated_insights += metrics_display
+
+    # ========== STORE IN MEMORY ==========
     try:
         from core.memory_manager import get_memory_manager
         mem = get_memory_manager()
@@ -1385,16 +1463,19 @@ Structure your response with:
             session_id=state.get("session_id","default_session"),
             turn_number=state.get("turn_number",1),
             user_query=state.get("user_query",""),
-            insight_text=filled
+            insight_text=generated_insights
         )
     except Exception as e:
-        print(f"[InsightGeneration] memory store failed: {e}")
+        print(f"[Insight Generation] memory store failed: {e}")
 
-    extracted_models = extract_model_names_from_text(filled)
+    extracted_models = extract_model_names_from_text(generated_insights)
+
+    print(f"[Insight Generation] Complete - {len(generated_insights)} chars")
+    print(f"{'='*80}\n")
 
     return {
-        "messages": [AIMessage(content=filled)],
-        "final_insights": filled,
+        "messages": [AIMessage(content=generated_insights)],
+        "final_insights": generated_insights,
         "rendered_charts": rendered_charts,
         "execution_path": execution_path,
         "mentioned_models": extracted_models or None
