@@ -189,6 +189,9 @@ def detect_turn_reference(query: str) -> tuple[bool, Optional[int]]:
 
 
 def query_understanding_agent(state: AgentState) -> dict:
+    """
+    FIXED VERSION - Better intent classification for "tell me about" queries
+    """
     query = state['user_query']
     messages = state.get('messages', [])
     conversation_context = state.get('conversation_context', {})
@@ -198,7 +201,7 @@ def query_understanding_agent(state: AgentState) -> dict:
     last_query_summary = state.get('last_query_summary')
     final_insights = state.get('final_insights')
     
-    #Check for explicit turn reference
+    # Check for explicit turn reference
     has_turn_ref, turn_number = detect_turn_reference(query)
     
     personalized_context_section = get_personalized_context_section(state)
@@ -213,7 +216,6 @@ def query_understanding_agent(state: AgentState) -> dict:
     if last_query_summary:
         context_parts.append(f"Previous query: {last_query_summary}")
     
-    #Include last insight summary for "why" questions
     if final_insights:
         context_parts.append(f"Last insight summary: {final_insights[:500]}...")
     
@@ -228,6 +230,7 @@ def query_understanding_agent(state: AgentState) -> dict:
     
     context_summary = "\n".join(context_parts) if context_parts else "No prior context"
     
+    # === ENHANCED SYSTEM PROMPT ===
     system_msg = f"""You are a query parser for pharma commercial analytics. Parse user queries to extract:
 
 USE CASES:
@@ -242,7 +245,7 @@ MODELS (fuzzy matching - user may say "random forest", "RF", "forest", etc.):
 - Ensembles: stacking, boosting, bagging, meta-learner
 
 COMPARISON TYPES:
-- performance: Compare model metrics
+- performance: Compare model metrics (DEFAULT for model-related queries)
 - predictions: Compare actual predictions
 - feature_importance: Compare which features matter most
 - drift: Detect changes over time
@@ -254,40 +257,38 @@ CONVERSATION CONTEXT (USE THIS TO AVOID ASKING FOR INFO ALREADY GIVEN):
 {context_summary}
 {personalized_context_section}
 
-CRITICAL CLARIFICATION RULES:
-1. Check conversation context FIRST before asking for clarification
-2. Current clarification attempts: {clarification_attempts}
-3. If attempts >= 3, DO NOT ask for clarification. Make reasonable assumptions.
-4. If user mentions "these models", "them", "those" - resolve from mentioned_models list
-5. If user asks "compare performance" without specifying models:
-   - If mentioned_models exists: Use those models
-   - If use_case exists: Assume comparison across all models for that use case
-   - Otherwise: Ask for clarification (only if attempts == 0)
-6. If only vague query like "show me models" - assume they want to see all active models
-7. For follow-up queries (when context exists), be MORE lenient - assume continuation of topic
+CRITICAL QUERY CLASSIFICATION RULES:
 
-REFERENCE RESOLUTION PRIORITY:
-1. If "these/those/them/they" mentioned → Use mentioned_models from context
-2. If "the ensemble" mentioned → Look for ensemble in context, or assume ensemble_vs_base comparison
-3. If "that model" mentioned → Use last mentioned model
-4. If "turn X" or "previous/earlier" mentioned → Set references_specific_turn=True
-5. Only set needs_clarification=True if attempts==0 AND no context available AND query is truly ambiguous
+1. **"Tell me about" / "List" / "Show me" queries:**
+   - "tell me about all models for NRx" → comparison_type="performance" (NOT list!)
+   - "show me models for HCP" → comparison_type="performance"
+   - "what models do we have" → comparison_type="performance"
+   - These are asking to SEE model information, which requires comparison analysis
 
-TURN REFERENCES:
-- Detect if query references specific past turns: "turn 3", "previous analysis", "earlier", "last time"
-- Set references_specific_turn=True if detected
-- Extract turn number if explicitly mentioned (e.g., "turn 3" → 3)
+2. **"Compare" queries:**
+   - "compare Random Forest vs XGBoost" → comparison_type="performance"
+   - "compare all models" → comparison_type="performance"
 
-Extract all relevant information. BE GENEROUS with assumptions when context exists.
+3. **Check conversation context FIRST** before asking for clarification
+4. Current clarification attempts: {clarification_attempts}
+5. If attempts >= 3, DO NOT ask for clarification. Make reasonable assumptions.
+
+6. **Reference resolution:**
+   - "these models", "them", "those" → resolve from mentioned_models list
+   - "the ensemble" → look for ensemble in context
+   - "that model" → use last mentioned model
+
+7. **Default to performance** for model-related queries without explicit comparison type
+
+8. **Be GENEROUS with assumptions** when context exists
 
 Examples:
-- "Compare Random Forest vs XGBoost for NRx forecasting" → use_case=NRx_forecasting, models=['Random Forest', 'XGBoost']
-- "Compare these" (with context models=['RF', 'XGB']) → resolved_models=['RF', 'XGB'], comparison_type=performance
+- "tell me about all models for NRx forecasting" → use_case=NRx_forecasting, comparison_type=performance
+- "Compare Random Forest vs XGBoost for NRx" → use_case=NRx_forecasting, models=['Random Forest', 'XGBoost'], comparison_type=performance
 - "show performance" (with context use_case=NRx_forecasting) → use_case=NRx_forecasting, comparison_type=performance
-- "why is ensemble worse" (no context, attempts=0) → needs_clarification=True
-- "why is ensemble worse" (no context, attempts=1) → comparison_type=ensemble_vs_base, make assumptions
-- "What was the RMSE in turn 3?" → references_specific_turn=True, referenced_turn_number=3, metrics=['RMSE']
-- "Why did XGBoost perform better?" (with recent context) → references_previous_context=True, models from context
+- "which models" → comparison_type=performance (show all models)
+
+Extract all relevant information. BE GENEROUS with assumptions when context exists.
 """
     
     structured_llm = llm.with_structured_output(ParsedIntent, method="function_calling")
@@ -315,13 +316,6 @@ Examples:
             final_models = mentioned_models
             result.resolved_models = mentioned_models
             result.needs_clarification = False
-        elif clarification_attempts >= 3:
-            final_models = []
-            result.needs_clarification = False
-            result.comparison_type = result.comparison_type or 'performance'
-        else:
-            result.needs_clarification = True
-            result.clarification_question = "Which models would you like to compare? Please specify model names (e.g., Random Forest, XGBoost)."
     
     if clarification_attempts >= 3:
         result.needs_clarification = False
@@ -346,7 +340,6 @@ Examples:
     needs_memory = result.references_specific_turn or (result.references_previous_context and not final_models)
     needs_database = bool(result.use_case or final_models or result.comparison_type)
     
-    #If referencing specific turn, always need memory
     if has_turn_ref:
         needs_memory = True
         result.references_specific_turn = True
@@ -377,8 +370,8 @@ Examples:
         "current_topic": result.use_case if result.use_case else state.get('current_topic'),
         "last_query_summary": " | ".join(summary_parts) if summary_parts else None,
         "clarification_attempts": clarification_attempts,
-        "needs_memory": needs_memory,  # NEW
-        "needs_database": needs_database  # NEW
+        "needs_memory": needs_memory,
+        "needs_database": needs_database
     }
 
 
@@ -528,6 +521,15 @@ def context_retrieval_agent(state: AgentState) -> dict:
         }
 
 def sql_generation_agent(state: AgentState) -> dict:
+    """
+    FIXED VERSION - Better SQL generation for all query types
+    
+    Generates SQL with:
+    - Proper aggregation for wide-format results
+    - Better handling of "list/show/tell me about" queries
+    - Improved retry logic
+    - Comprehensive error messages
+    """
     execution_path = state.get('execution_path', [])
     execution_path.append('sql_generation')
     
@@ -537,6 +539,7 @@ def sql_generation_agent(state: AgentState) -> dict:
     metrics_requested = state.get('metrics_requested', [])
     time_range = state.get('time_range')
     context_docs = state.get('context_documents', [])
+    user_query = state.get('user_query', '')
 
     personalized_context_section = get_personalized_context_section(state)
     
@@ -560,33 +563,41 @@ Previous SQL that failed:
 Issue: {previous_error}
 
 CRITICAL FIXES NEEDED:
-1. **Relax ILIKE filters** - Make patterns more general
-   - Instead of: model_name ILIKE '%random forest classifier%'
-   - Try: model_name ILIKE '%random%' OR algorithm ILIKE '%forest%'
+1. **Use LEFT JOINs** instead of INNER JOINs to avoid eliminating rows
+2. **Relax ILIKE filters** - Make patterns more general (e.g., '%random%' instead of '%random forest%')
+3. **Remove unnecessary filters** - Start with just model table, add filters gradually
+4. **Use aggregation** - For performance metrics, aggregate using AVG() to get one row per model
+5. **Verify data exists** - Query the models table first to confirm models exist
 
-2. **Reduce JOIN complexity** - Use LEFT JOINs to avoid eliminating rows
-   - Check if all JOINs are necessary
-   - Consider fetching from fewer tables
+EXAMPLE OF WORKING QUERY:
+```sql
+SELECT 
+    m.model_name,
+    m.model_type,
+    m.algorithm,
+    m.use_case,
+    AVG(pm.metric_value) FILTER (WHERE pm.metric_name = 'rmse' AND pm.data_split = 'test') as avg_test_rmse,
+    AVG(pm.metric_value) FILTER (WHERE pm.metric_name = 'r2_score' AND pm.data_split = 'test') as avg_test_r2,
+    AVG(pm.metric_value) FILTER (WHERE pm.metric_name = 'mae' AND pm.data_split = 'test') as avg_test_mae
+FROM models m
+LEFT JOIN latest_model_executions lme ON m.model_id = lme.model_id
+LEFT JOIN performance_metrics pm ON lme.execution_id = pm.execution_id
+WHERE m.is_active = true
+  AND m.use_case ILIKE '%nrx%'
+GROUP BY m.model_name, m.model_type, m.algorithm, m.use_case
+HAVING COUNT(DISTINCT lme.execution_id) > 0
+LIMIT 100;
+```
 
-3. **Remove overly specific filters**
-   - Check date ranges are reasonable
-   - Verify use_case spelling matches database exactly
-   - Remove unnecessary WHERE conditions one by one
-
-4. **Broaden search patterns**
-   - Use OR conditions to cast a wider net
-   - Try partial matches on key fields
-   - Consider querying just the models table first to verify data exists
-
-5. **Verify table/column names**
-   - Double-check spelling of table and column names
-   - Ensure is_active filter isn't excluding all models
+Be MORE lenient with filters on retry attempts.
 """
     
+    # === ENHANCED PROMPT WITH BETTER EXAMPLES ===
     prompt = f"""
-You are a SQL expert specializing in pharma commercial analytics databases. Your task is to generate a **valid PostgreSQL SELECT query** that accurately answers the user's question.
+You are a SQL expert specializing in pharma commercial analytics databases. 
+Generate a **valid PostgreSQL SELECT query** that answers the user's question.
 
-USER QUERY: {state['user_query']}
+USER QUERY: {user_query}
 
 PARSED INTENT:
 - Use Case: {use_case}
@@ -599,51 +610,148 @@ PARSED INTENT:
 
 {SCHEMA_CONTEXT}
 
-{context_docs}
+{context_docs if context_docs else ""}
 {personalized_context_section}
 
-INSTRUCTIONS:
-1. Generate a **valid PostgreSQL SELECT query** only.
-2. Use appropriate **JOINs** to connect related tables (prefer LEFT JOIN if unsure).
-3. Always **filter models with `is_active = true`** (but verify this field exists).
-4. Use **`data_split = 'test'`** for performance metrics unless the user specifies otherwise.
-5. Use the **`latest_model_executions` view** to retrieve the most recent model execution.
-6. Handle **NULL values** appropriately.
-7. Use **ILIKE** for all case-insensitive string comparisons.
-8. Apply **meaningful ordering** for results.
-9. Limit results to a **reasonable size** (e.g., `LIMIT 100`).
-10. **CRITICAL**: If personalized context mentions specific model names, products, or competitors, USE THOSE EXACT NAMES in your WHERE clauses with ILIKE patterns.
+CRITICAL INSTRUCTIONS:
 
-Example: If context mentions "RF_NRx_Cardio_v2.1", use:
-WHERE model_name ILIKE '%RF_NRx_Cardio%' OR model_name ILIKE '%Cardio%'
+1. **Query Type Detection:**
+   - "tell me about models", "show me models", "what models" → List all models with metrics
+   - "compare models" → Compare specific models across metrics
+   - "which model is best" → Rank models by performance
 
-IMPORTANT – Fuzzy Matching for Model Names:
-- Use **broad partial matches**, especially on retries:
-  - `ILIKE '%random%'` or `ILIKE '%forest%'` (very broad)
-  - `ILIKE '%xgb%'` or `ILIKE '%boost%'`
-  - `ILIKE '%lgb%'` or `ILIKE '%light%'`
-- Combine with OR conditions for flexibility
+2. **Use AGGREGATION for metrics:**
+   - Use AVG() with FILTER to get one row per model
+   - Example: `AVG(pm.metric_value) FILTER (WHERE pm.metric_name = 'rmse') as avg_rmse`
+   - This creates WIDE format: [model_name, avg_rmse, avg_r2, avg_mae, ...]
 
-{"🔴 RETRY MODE: Be MORE lenient with filters. The goal is to return SOME data." if retry_count > 0 else ""}
+3. **Required JOINs:**
+   - Always start with `FROM models m`
+   - Use `LEFT JOIN latest_model_executions lme` (not INNER JOIN!)
+   - Use `LEFT JOIN performance_metrics pm` to get metrics
+   - LEFT JOINs ensure we don't lose models that have no metrics
 
-Example for retry (very broad):
+4. **Filtering:**
+   - Always include `WHERE m.is_active = true`
+   - Use ILIKE for case-insensitive matching: `m.use_case ILIKE '%nrx%'`
+   - For model names, use broad patterns: `m.model_name ILIKE '%random%'`
+   - Add `AND pm.data_split = 'test'` when querying performance_metrics
+
+5. **Grouping:**
+   - GROUP BY: m.model_name, m.model_type, m.algorithm, m.use_case
+   - Add HAVING clause to ensure models have executions: `HAVING COUNT(DISTINCT lme.execution_id) > 0`
+
+6. **Metric Selection:**
+   - ALWAYS include: rmse, mae, r2_score (for regression)
+   - OPTIONAL: auc_roc, accuracy, precision, recall (for classification)
+   - Use FILTER clause for each metric
+
+7. **Performance:**
+   - Add `LIMIT 100` to prevent huge result sets
+   - Use indexes: Always filter on is_active first
+
+8. **Personalized Context:**
+{f"   IMPORTANT: User mentioned these specific terms: {personalized_context_section[:200]}" if personalized_context_section else ""}
+
+EXAMPLE QUERIES:
+
+=== Example 1: "Tell me about all models for NRx forecasting" ===
 ```sql
-SELECT m.model_name, m.algorithm, m.use_case
+SELECT 
+    m.model_name,
+    m.model_type,
+    m.algorithm,
+    m.use_case,
+    m.version,
+    m.trained_date,
+    AVG(pm.metric_value) FILTER (WHERE pm.metric_name = 'rmse' AND pm.data_split = 'test') as avg_test_rmse,
+    AVG(pm.metric_value) FILTER (WHERE pm.metric_name = 'mae' AND pm.data_split = 'test') as avg_test_mae,
+    AVG(pm.metric_value) FILTER (WHERE pm.metric_name = 'r2_score' AND pm.data_split = 'test') as avg_test_r2
 FROM models m
-WHERE (
-  m.model_name ILIKE '%random%' 
-  OR m.model_name ILIKE '%forest%'
-  OR m.algorithm ILIKE '%random%'
-  OR m.algorithm ILIKE '%forest%'
-)
-AND m.is_active = true
-LIMIT 50;
+LEFT JOIN latest_model_executions lme ON m.model_id = lme.model_id
+LEFT JOIN performance_metrics pm ON lme.execution_id = pm.execution_id
+WHERE m.is_active = true
+  AND m.use_case ILIKE '%nrx%'
+GROUP BY m.model_name, m.model_type, m.algorithm, m.use_case, m.version, m.trained_date
+HAVING COUNT(DISTINCT lme.execution_id) > 0
+ORDER BY avg_test_rmse ASC NULLS LAST
+LIMIT 100;
 ```
+
+=== Example 2: "Compare Random Forest vs XGBoost" ===
+```sql
+SELECT 
+    m.model_name,
+    m.algorithm,
+    m.use_case,
+    AVG(pm.metric_value) FILTER (WHERE pm.metric_name = 'rmse' AND pm.data_split = 'test') as avg_test_rmse,
+    AVG(pm.metric_value) FILTER (WHERE pm.metric_name = 'r2_score' AND pm.data_split = 'test') as avg_test_r2,
+    AVG(pm.metric_value) FILTER (WHERE pm.metric_name = 'mae' AND pm.data_split = 'test') as avg_test_mae
+FROM models m
+LEFT JOIN latest_model_executions lme ON m.model_id = lme.model_id
+LEFT JOIN performance_metrics pm ON lme.execution_id = pm.execution_id
+WHERE m.is_active = true
+  AND (m.model_name ILIKE '%random%' OR m.model_name ILIKE '%xgb%' 
+       OR m.algorithm ILIKE '%random%' OR m.algorithm ILIKE '%xgb%')
+GROUP BY m.model_name, m.algorithm, m.use_case
+HAVING COUNT(DISTINCT lme.execution_id) > 0
+ORDER BY avg_test_rmse ASC
+LIMIT 100;
+```
+
+=== Example 3: "Show drift detection for models" ===
+```sql
+SELECT 
+    m.model_name,
+    m.use_case,
+    ddr.drift_type,
+    ddr.drift_score,
+    ddr.is_significant,
+    ddr.detected_at
+FROM models m
+JOIN latest_executions_with_drift led ON m.model_id = led.model_id
+LEFT JOIN drift_detection_results ddr ON led.execution_id = ddr.execution_id
+WHERE m.is_active = true
+  AND ddr.is_significant = true
+ORDER BY ddr.drift_score DESC
+LIMIT 100;
+```
+
+VALIDATION CHECKLIST:
+□ Starts with SELECT
+□ Uses LEFT JOIN (not INNER JOIN)
+□ Filters by is_active = true
+□ Uses AVG() with FILTER for metrics (wide format)
+□ Includes GROUP BY for aggregated queries
+□ Has LIMIT clause
+□ Uses ILIKE for string matching
+□ Returns ONE row per model (aggregated)
+
+{"🔴 RETRY MODE: Use broader filters and LEFT JOINs" if retry_count > 0 else ""}
+
+Generate the SQL query now:
 """
 
     try:
         structured_llm = llm.with_structured_output(SQLQuerySpec, method="function_calling")
         result = structured_llm.invoke(prompt)
+        
+        # === VALIDATE GENERATED SQL ===
+        sql = result.sql_query
+        
+        # Check for common issues
+        issues = []
+        if 'INNER JOIN' in sql.upper():
+            issues.append("⚠ Using INNER JOIN - consider LEFT JOIN to avoid losing rows")
+        if 'GROUP BY' not in sql.upper() and 'AVG(' in sql.upper():
+            issues.append("⚠ Using AVG() without GROUP BY - may cause error")
+        if 'LIMIT' not in sql.upper():
+            issues.append("⚠ No LIMIT clause - may return too many rows")
+        
+        if issues:
+            print(f"\n[SQL Validation] Potential issues found:")
+            for issue in issues:
+                print(f"  {issue}")
         
         return {
             "generated_sql": result.sql_query,
@@ -654,7 +762,10 @@ LIMIT 50;
         }
     
     except Exception as e:
-        print(f"SQL generation failed: {e}")
+        print(f"[SQL Generation] Failed: {e}")
+        import traceback
+        traceback.print_exc()
+        
         return {
             "generated_sql": None,
             "sql_purpose": "Failed to generate SQL",
@@ -759,7 +870,11 @@ class AnalysisOutput(BaseModel):
     statistical_summary: Dict[str, Any] = Field(description="Statistical summaries")
 
 def analysis_computation_agent(state: AgentState) -> dict:
-    """Two-stage analysis with DEBUG logging"""
+    """
+    FIXED VERSION - Better debugging and data validation
+    
+    Two-stage analysis with comprehensive DEBUG logging
+    """
     execution_path = state.get('execution_path', [])
     execution_path.append('analysis_computation')
 
@@ -781,33 +896,47 @@ def analysis_computation_agent(state: AgentState) -> dict:
         if result.get('success') and result.get('data'):
             successful_data.extend(result['data'])
 
-    # ===== DEBUG LOGGING =====
+    # ===== CRITICAL DEBUG LOGGING =====
     print(f"\n{'='*80}")
     print(f"[Analysis Debug] Data Inspection")
     print(f"{'='*80}")
-    print(f"Total rows: {len(successful_data)}")
+    print(f"Total tool results: {len(tool_results)}")
+    print(f"Total rows extracted: {len(successful_data)}")
     
     if successful_data:
-        print(f"Sample row: {successful_data[0]}")
-        print(f"Columns: {list(successful_data[0].keys())}")
-        print(f"Column count: {len(successful_data[0].keys())}")
+        print(f"\n[Sample Row]")
+        print(json.dumps(successful_data[0], indent=2, default=str))
+        print(f"\n[All Columns]: {list(successful_data[0].keys())}")
+        print(f"[Column Count]: {len(successful_data[0].keys())}")
         
-        # Check for expected columns
-        expected_cols = ['model_name', 'model_type', 'metric_name', 'metric_value']
-        found_cols = [col for col in expected_cols if col in successful_data[0]]
-        missing_cols = [col for col in expected_cols if col not in successful_data[0]]
+        # Check for metric columns
+        metric_cols = [col for col in successful_data[0].keys() 
+                      if any(m in col.lower() for m in ['rmse', 'mae', 'r2', 'auc', 'accuracy', 'precision'])]
+        print(f"[Detected Metric Columns]: {metric_cols}")
         
-        print(f"Expected columns found: {found_cols}")
-        print(f"Missing columns: {missing_cols}")
+        # Check if data is in long or wide format
+        has_metric_name = 'metric_name' in successful_data[0]
+        has_metric_value = 'metric_value' in successful_data[0]
+        has_model_name = 'model_name' in successful_data[0]
+        
+        print(f"\n[Format Detection]:")
+        print(f"  - Has 'metric_name': {has_metric_name}")
+        print(f"  - Has 'metric_value': {has_metric_value}")
+        print(f"  - Has 'model_name': {has_model_name}")
+        print(f"  - Format: {'LONG' if (has_metric_name and has_metric_value) else 'WIDE'}")
+    else:
+        print("[ERROR] No successful data found!")
     print(f"{'='*80}\n")
     # ===== END DEBUG =====
 
     if not successful_data:
+        print("[Analysis] No data - returning empty result")
         return {
             "analysis_results": {
                 'analysis_type': 'empty',
                 'error': 'No data returned from SQL',
-                'patterns': ['NO_DATA'],
+                'story': 'NO_DATA: No data available for analysis.',
+                'story_elements': {},
                 'computed_values': {},
                 'raw_metrics': {}
             },
@@ -825,27 +954,39 @@ def analysis_computation_agent(state: AgentState) -> dict:
         'data_columns': list(successful_data[0].keys()) if successful_data else []
     }
     
-    # LLM decision
-    analysis_decision_prompt = f"""You are an analysis router. Based on the query context, decide which analysis type to run.
+    # === ENHANCED LLM DECISION WITH BETTER PROMPTING ===
+    analysis_decision_prompt = f"""You are an analysis router. Based on the query context and data, decide which analysis type to run.
 
 USER QUERY: {query_context['user_query']}
+
+DATA STRUCTURE:
+- Row Count: {query_context['data_row_count']}
+- Columns: {', '.join(query_context['data_columns'][:15])}
+- Has model_name: {'model_name' in query_context['data_columns']}
+- Has metric columns: {any('rmse' in col.lower() or 'mae' in col.lower() or 'r2' in col.lower() for col in query_context['data_columns'])}
+
 QUERY CONTEXT:
 - Use Case: {query_context['use_case']}
 - Comparison Type: {query_context['comparison_type']}
-- Data Available: {query_context['data_row_count']} rows
-- Data Columns: {', '.join(query_context['data_columns'])}
+- Models Requested: {query_context['models_requested']}
 
 AVAILABLE ANALYSIS TYPES:
-performance, drift, ensemble_vs_base, feature_importance, uplift, territory_performance, 
-market_share, price_sensitivity, competitor_share, clustering, predictions, versions, general
+- performance: Model performance comparison (use this for NRx forecasting, model comparisons, "tell me about models")
+- drift: Drift detection analysis
+- ensemble_vs_base: Ensemble vs base model comparison
+- feature_importance: Feature importance analysis
+- general: General data analysis (fallback)
 
 DECISION RULES:
-- If columns include model_name + metric columns → "performance"
-- If use_case = "NRx_forecasting" → "performance"
-- If columns include drift-related fields → "drift"
-- Default to "performance" for model comparisons
+1. If query contains "models for" or "tell me about models" → performance
+2. If data has model_name + metric columns (rmse, r2, mae, etc.) → performance
+3. If use_case = "NRx_forecasting" → performance
+4. If comparison_type = "performance" → performance
+5. If query asks about "drift" → drift
+6. If query asks about "features" or "importance" → feature_importance
+7. Default to performance for model-related queries
 
-Return ONLY ONE WORD: the analysis type.
+CRITICAL: Return ONLY ONE WORD - the analysis type (e.g., "performance")
 """
 
     try:
@@ -859,14 +1000,19 @@ Return ONLY ONE WORD: the analysis type.
         ]
         
         if analysis_type not in valid_types:
+            # Try to find matching type
             for vtype in valid_types:
                 if vtype in analysis_type:
                     analysis_type = vtype
                     break
             else:
-                analysis_type = "performance"  # Default for NRx queries
+                # Default to performance for model queries
+                if 'model' in query_context['user_query'].lower():
+                    analysis_type = "performance"
+                else:
+                    analysis_type = "general"
         
-        print(f"[Analysis] LLM selected: {analysis_type}")
+        print(f"[Analysis] LLM selected type: {analysis_type}")
         query_context['comparison_type'] = analysis_type
         
     except Exception as e:
@@ -874,16 +1020,30 @@ Return ONLY ONE WORD: the analysis type.
         analysis_type = "performance"
         query_context['comparison_type'] = analysis_type
 
-    # Call aggregator
+    # === CALL AGGREGATOR ===
+    print(f"[Analysis] Calling aggregator with type: {analysis_type}")
     from core.analysis_aggregators import analyze_data
     analysis_results = analyze_data(successful_data, query_context)
 
+    # === VALIDATE RESULTS ===
+    print(f"\n[Analysis Results Validation]")
+    print(f"  - Analysis Type: {analysis_results.get('analysis_type')}")
+    print(f"  - Story Length: {len(analysis_results.get('story', ''))}")
+    print(f"  - Computed Values Keys: {list(analysis_results.get('computed_values', {}).keys())[:10]}")
+    print(f"  - Story Elements Keys: {list(analysis_results.get('story_elements', {}).keys())}")
+    print(f"  - Raw Metrics Keys: {list(analysis_results.get('raw_metrics', {}).keys())}")
+    
+    # Check if we got meaningful results
+    story = analysis_results.get('story', '')
+    if story and story != "NO_DATA: No data available for analysis.":
+        print(f"  - Status: ✓ Valid analysis generated")
+    else:
+        print(f"  - Status: ✗ Empty or invalid analysis!")
+        print(f"  - Story preview: {story[:200]}")
+
+    # Attach raw data for reference
     analysis_results['raw_data'] = tool_results
     analysis_results['data_row_count'] = len(successful_data)
-
-    print(f"[Analysis] Result type: {analysis_results.get('analysis_type')}")
-    print(f"[Analysis] Story length: {len(analysis_results.get('story', ''))}")
-    print(f"[Analysis] Computed values: {list(analysis_results.get('computed_values', {}).keys())[:10]}")
 
     return {
         "analysis_results": analysis_results,
@@ -1280,12 +1440,7 @@ def visualization_rendering_agent(state: AgentState) -> dict:
 
 def insight_generation_agent(state: AgentState) -> dict:
     """
-    FIXED VERSION - Properly uses analysis results
-    
-    Generates insights using:
-    1. Analysis story (qualitative patterns)
-    2. Computed values (for template filling)
-    3. Raw metrics (exact values for display)
+    FIXED VERSION - Better formatting and explicit model listing
     """
     execution_path = state.get('execution_path', [])
     execution_path.append('insight_generation')
@@ -1296,178 +1451,282 @@ def insight_generation_agent(state: AgentState) -> dict:
     conversation_summaries = state.get('conversation_summaries', []) or []
     personalized_context_section = get_personalized_context_section(state)
 
-    # ========== EXTRACT ANALYSIS COMPONENTS ==========
+    # Extract analysis components
     story = analysis_results.get("story", "")
     story_elements = analysis_results.get("story_elements", {}) or {}
     computed_values = analysis_results.get("computed_values", {}) or {}
     raw_metrics = analysis_results.get("raw_metrics", {}) or {}
     analysis_type = analysis_results.get("analysis_type", "unknown")
+    models_analyzed = analysis_results.get("models_analyzed", [])
     
     print(f"\n{'='*80}")
     print(f"[Insight Generation] Starting")
     print(f"{'='*80}")
     print(f"Analysis type: {analysis_type}")
     print(f"Story length: {len(story)} chars")
+    print(f"Models analyzed: {models_analyzed}")
     print(f"Computed values: {len(computed_values)} keys")
     print(f"Raw metrics: {len(raw_metrics)} keys")
-    print(f"Story elements: {list(story_elements.keys())}")
     
-    # Check if we have actual data
+    # Validate data
     has_data = bool(computed_values and story and story != "NO_DATA: No data available for analysis.")
     
     if not has_data:
-        print("[Insight Generation] WARNING: No meaningful analysis data found!")
+        print("[Insight Generation] ✗ No meaningful analysis data found!")
         return {
-            "messages": [AIMessage(content="No data available for analysis. Please check your query or database.")],
+            "messages": [AIMessage(content="I couldn't find data to analyze. Please check:\n- Are there models registered in the database?\n- Are the model names spelled correctly?\n- Is the use case specified correctly?")],
             "final_insights": "No data available for analysis.",
             "rendered_charts": rendered_charts,
             "execution_path": execution_path
         }
     
-    # ========== BUILD CONTEXT SECTIONS ==========
+    print("[Insight Generation] ✓ Valid analysis data found")
     
-    # Visualization context
+    # Build context sections
     viz_context = ""
     if rendered_charts:
         parts = []
         for i, ch in enumerate(rendered_charts, 1):
             parts.append(
                 f"**Chart {i}: {ch.get('title','Chart')}**\n"
-                f"Type: {ch.get('type')} \n"
-                f"Shows: {ch.get('explanation','Chart explaining metric relationships')}"
+                f"Shows: {ch.get('explanation','Metric visualization')}"
             )
-        viz_context = "\n\n".join(parts)
+        viz_context = "\n".join(parts)
 
-    # Conversation context
     conv_context = ""
     if conversation_summaries:
-        conv_context = "**Previous Conversation:**\n"
-        for chunk in conversation_summaries:
+        conv_context = "**Previous Discussion:**\n"
+        for chunk in conversation_summaries[:2]:
             txt = chunk.get("insight_chunk","")
-            preview = txt[:300] + ("..." if len(txt)>300 else "")
+            preview = txt[:200] + ("..." if len(txt)>200 else "")
             conv_context += f"- Turn {chunk.get('turn')}: {preview}\n"
 
-    # Domain context
     domain_context = ""
     if context_docs:
         snip = []
-        for doc in context_docs[:3]:
+        for doc in context_docs[:2]:
             title = doc.get("title","Context")
-            content = doc.get("content","")[:300]
-            snip.append(f"**{title}**\n{content}...")
+            content = doc.get("content","")[:200]
+            snip.append(f"**{title}**: {content}...")
         if snip:
-            domain_context = "\n\n".join(snip)
+            domain_context = "\n".join(snip)
 
-    # ========== PREPARE COMPUTED VALUES FOR DISPLAY ==========
-    # Show actual values to LLM for context (not for template filling)
+    # Extract model list for explicit mention
+    model_list_text = ""
+    if models_analyzed:
+        model_list_text = f"\n\n**Models Analyzed:** {len(models_analyzed)} models found:\n"
+        for i, model in enumerate(models_analyzed, 1):
+            model_list_text += f"{i}. {model}\n"
+    
     computed_values_preview = {
-        k: v for k, v in list(computed_values.items())[:20]  # First 20 to avoid token overflow
+        k: v for k, v in list(computed_values.items())[:15]
     }
     
-    # ========== BUILD PROMPT ==========
+    # Enhanced prompt
     prompt = f"""You are a pharma analytics expert producing stakeholder insights.
 
-USER QUERY:
-{state.get('user_query')}
+USER QUERY: {state.get('user_query')}
 
 ANALYSIS TYPE: {analysis_type}
 
-ANALYSIS STORY (Qualitative Patterns):
+MODELS FOUND: {len(models_analyzed)} models
+{model_list_text}
+
+=== ANALYSIS STORY (Main Findings) ===
 {story}
 
-STORY ELEMENTS (Structured Insights):
-{json.dumps(story_elements, indent=2)}
+=== STORY ELEMENTS (Structured Data) ===
+{json.dumps(story_elements, indent=2, default=str)}
 
-COMPUTED VALUES SAMPLE (Available for reference):
+=== KEY METRICS AVAILABLE ===
 {json.dumps(computed_values_preview, indent=2, default=str)}
 
-NOTE: More computed values are available. Use the story and story_elements to generate insights.
-
-Domain Context:
 {domain_context}
 
-Visualizations:
 {viz_context}
 
-Conversation:
 {conv_context}
 
 {personalized_context_section}
 
 CRITICAL INSTRUCTIONS:
-1. **DO NOT say "no data" or "no models"** - The analysis has already identified patterns
-2. **Use the STORY and STORY_ELEMENTS** to generate insights
-3. **Be specific and factual** - Reference actual model names and metrics from the story
-4. **Structure your response with:**
-   - Executive Summary (2-3 sentences about what was found)
-   - Key Findings (bullet points from story_elements)
-   - Deep Dive (detailed analysis from story)
-   - Recommendations (actionable next steps)
 
-5. **Reference specific models and metrics** mentioned in the story
-6. **DO NOT use placeholder syntax like {{{{BEST_MODEL}}}}** - Write naturally
-7. **Extract actual values** from the story and story_elements
+1. **ALWAYS List All Models First**
+   - Start your response by explicitly listing all {len(models_analyzed)} models found
+   - Use the models_analyzed list: {models_analyzed}
+   - Format: "We analyzed X models: Model1, Model2, Model3..."
 
-Example - GOOD:
-"Our analysis of NRx forecasting models shows that XGBoost achieved the best RMSE of 32.5, 
-outperforming Random Forest (RMSE: 35.2) by 8%. The ensemble model demonstrates high consistency 
-with low variability across validation folds."
+2. **Structure Your Response:**
+   
+   ## Models Found
+   [List all models explicitly - REQUIRED]
+   
+   ## Executive Summary
+   [2-3 sentences about key finding - which model is best?]
+   
+   ## Performance Breakdown
+   [For each model or top 3-5 models, show their metrics]
+   
+   ## Key Findings
+   [Bullet points from story_elements]
+   
+   ## Recommendations
+   [Actionable next steps]
 
-Example - BAD:
-"Currently, there are no models evaluated for NRx forecasting..."
+3. **Be Specific and Use Actual Values**
+   - Quote actual model names from the list
+   - Reference actual metric values from story_elements
+   - Example: "XGBoost achieved RMSE of 32.5, outperforming Random Forest (RMSE: 35.2)"
 
-Generate comprehensive insights based on the analysis story and elements above.
+4. **DO NOT use JSON or code blocks in your response**
+   - Write in natural language
+   - Use tables or bullet points for clarity
+   - NO raw JSON dumps
+
+5. **Reference the story for insights**
+   - The story already contains the analysis
+   - Extract model names and values from story_elements
+
+EXAMPLE - GOOD STRUCTURE:
+
+## Models Analyzed
+
+We found 7 models for NRx forecasting:
+1. NRx_Ensemble_Boosting_v1
+2. NRx_XGBoost_v3
+3. NRx_Ensemble_Voting_v1
+4. NRx_Ensemble_Stacking_v2
+5. NRx_LightGBM_v2
+6. NRx_RandomForest_v2
+7. NRx_LinearRegression_v1
+
+## Executive Summary
+
+Analysis of 7 NRx forecasting models shows that **NRx_Ensemble_Boosting_v1** achieved the best overall performance with RMSE of 39.27 and MAE of 23.60. The **NRx_Ensemble_Voting_v1** model leads in R² (0.81), indicating superior explanatory power.
+
+## Performance Breakdown
+
+**Top Performers:**
+- **NRx_Ensemble_Boosting_v1**: RMSE 39.27 | MAE 23.60 | R² 0.76 ⭐ Best RMSE
+- **NRx_Ensemble_Voting_v1**: RMSE 42.75 | MAE 26.48 | R² 0.81 ⭐ Best R²
+- **NRx_XGBoost_v3**: RMSE 42.18 | MAE 30.57 | R² 0.72
+
+**Other Models:**
+- NRx_Ensemble_Stacking_v2: RMSE 43.23
+- NRx_LightGBM_v2: RMSE 46.09
+- NRx_RandomForest_v2: RMSE 49.60
+- NRx_LinearRegression_v1: RMSE 59.25
+
+## Key Findings
+[Rest of analysis...]
+
+Now generate insights following this structure for the actual data provided above.
 """
 
-    # ========== CALL LLM ==========
+    # Call LLM
     try:
         llm_response = llm.invoke(prompt)
         generated_insights = llm_response.content
         
-        print(f"[Insight Generation] Generated {len(generated_insights)} chars of insights")
+        print(f"[Insight Generation] ✓ Generated {len(generated_insights)} chars")
+        
+        # Validate insights quality
+        if not generated_insights or len(generated_insights) < 100:
+            print(f"[Insight Generation] ✗ WARNING: Generated insights too short!")
+        
+        # Check if models are mentioned
+        models_mentioned = sum(1 for model in models_analyzed if model in generated_insights)
+        print(f"[Insight Generation] Models mentioned in output: {models_mentioned}/{len(models_analyzed)}")
+        
+        if models_mentioned < len(models_analyzed) * 0.5:  # Less than 50% mentioned
+            print(f"[Insight Generation] ⚠ WARNING: Many models not mentioned in insights!")
         
     except Exception as e:
-        print(f"[Insight Generation] LLM failed: {e}")
+        print(f"[Insight Generation] ✗ LLM failed: {e}")
         
-        # Fallback: Use story directly
-        generated_insights = f"""## Analysis Results
+        # Fallback
+        generated_insights = f"""## Models Analyzed
+
+We found {len(models_analyzed)} models:
+{chr(10).join(f'{i}. {model}' for i, model in enumerate(models_analyzed, 1))}
+
+## Analysis Results
 
 {story}
 
-### Key Insights
-Based on the analysis, we have identified patterns in the data. Please review the visualizations and metrics for detailed findings.
+Please review the findings above for detailed performance metrics.
 """
 
-    # ========== APPEND RAW METRICS FOR USER DISPLAY ==========
+    # ========== FORMAT RAW METRICS AS NICE TABLES (NOT JSON) ==========
     if raw_metrics:
-        metrics_display = "\n\n---\n\n## 📊 Detailed Metrics\n\n"
+        metrics_display = "\n\n---\n\n## 📊 Detailed Performance Metrics\n\n"
         
-        # Format raw metrics nicely
-        for category, data in raw_metrics.items():
-            metrics_display += f"### {category.replace('_', ' ').title()}\n\n"
+        for metric_name, metric_data in raw_metrics.items():
+            # Clean up metric name
+            display_name = metric_name.replace('_', ' ').title()
+            metrics_display += f"### {display_name}\n\n"
             
-            if isinstance(data, dict):
-                # Convert to markdown table
-                if data and isinstance(list(data.values())[0], dict):
-                    # Nested dict (e.g., metric -> model -> values)
-                    for sub_key, sub_data in data.items():
-                        metrics_display += f"**{sub_key}:**\n\n"
+            if isinstance(metric_data, dict):
+                try:
+                    # Check if it's a nested dict (model -> metrics)
+                    sample_value = list(metric_data.values())[0] if metric_data else None
+                    
+                    if isinstance(sample_value, dict):
+                        # Nested structure: Convert to DataFrame and table
+                        df = pd.DataFrame(metric_data).T
                         
-                        if isinstance(sub_data, dict):
-                            # Create table
-                            df = pd.DataFrame(sub_data).T
-                            metrics_display += df.to_markdown() + "\n\n"
-                        else:
-                            metrics_display += f"{sub_data}\n\n"
-                else:
-                    # Simple dict
-                    for k, v in data.items():
-                        metrics_display += f"- **{k}**: {v}\n"
+                        # Format numeric columns
+                        for col in df.columns:
+                            if col in ['mean', 'std', 'min', 'max']:
+                                df[col] = df[col].astype(float).round(4)
+                        
+                        # Convert to markdown table
+                        metrics_display += df.to_markdown() + "\n\n"
+                    else:
+                        # Simple key-value dict
+                        # Sort by value (ascending for errors, descending for scores)
+                        lower_better = any(term in metric_name.lower() for term in ['rmse', 'mae', 'mse', 'error'])
+                        sorted_items = sorted(metric_data.items(), 
+                                            key=lambda x: float(str(x[1]).replace(',', '')) if isinstance(x[1], (int, float, str)) else 0,
+                                            reverse=not lower_better)
+                        
+                        # Create a nice table
+                        table_lines = ["| Rank | Model | Value |", "|------|-------|-------|"]
+                        for rank, (model, value) in enumerate(sorted_items, 1):
+                            # Format value
+                            if isinstance(value, float):
+                                value_str = f"{value:.4f}"
+                            elif isinstance(value, str) and '%' in value:
+                                value_str = value
+                            else:
+                                value_str = str(value)
+                            
+                            # Add emoji for top 3
+                            emoji = ""
+                            if rank == 1:
+                                emoji = " 🥇"
+                            elif rank == 2:
+                                emoji = " 🥈"
+                            elif rank == 3:
+                                emoji = " 🥉"
+                            
+                            table_lines.append(f"| {rank}{emoji} | {model} | {value_str} |")
+                        
+                        metrics_display += "\n".join(table_lines) + "\n\n"
+                
+                except Exception as e:
+                    print(f"[Insight] Error formatting {metric_name}: {e}")
+                    # Fallback: Simple list
+                    for key, val in list(metric_data.items())[:10]:
+                        metrics_display += f"- **{key}**: {val}\n"
                     metrics_display += "\n"
+            else:
+                metrics_display += f"{metric_data}\n\n"
         
+        # Append formatted metrics to insights
         generated_insights += metrics_display
 
-    # ========== STORE IN MEMORY ==========
+    # Store in memory
     try:
         from core.memory_manager import get_memory_manager
         mem = get_memory_manager()
@@ -1478,11 +1737,11 @@ Based on the analysis, we have identified patterns in the data. Please review th
             insight_text=generated_insights
         )
     except Exception as e:
-        print(f"[Insight Generation] memory store failed: {e}")
+        print(f"[Insight Generation] Memory store failed: {e}")
 
     extracted_models = extract_model_names_from_text(generated_insights)
 
-    print(f"[Insight Generation] Complete - {len(generated_insights)} chars")
+    print(f"[Insight Generation] ✓ Complete")
     print(f"{'='*80}\n")
 
     return {

@@ -222,8 +222,17 @@ class AnalysisAggregator:
     # PERFORMANCE ANALYSIS
     # -------------------------
     def _analyze_model_performance(self) -> Dict[str, Any]:
-        """Comprehensive model performance comparison"""
+
         metrics_summary = self._compute_metrics_summary()
+        
+        # ===== EXTRACT MODEL LIST (CRITICAL) =====
+        models_analyzed = []
+        if "model_name" in self.df.columns:
+            models_analyzed = sorted(self.df["model_name"].unique().tolist())
+            print(f"[Performance Analysis] Found {len(models_analyzed)} models: {models_analyzed}")
+        else:
+            print(f"[Performance Analysis] WARNING: No model_name column!")
+        
         rankings = self._compute_rankings(metrics_summary)
         story = self._generate_performance_story(metrics_summary, rankings)
         story_elements = self._extract_performance_story_elements(metrics_summary, rankings)
@@ -242,142 +251,207 @@ class AnalysisAggregator:
             "story_elements": story_elements,
             "computed_values": merged,
             "raw_metrics": raw_metrics,
-            "models_analyzed": list(self.df["model_name"].unique()) if "model_name" in self.df.columns else [],
+            "models_analyzed": models_analyzed,  # ← CRITICAL: Always include this
         }
 
     def _compute_metrics_summary(self) -> Dict[str, Any]:
         """
-        Compute metrics summary - FIXED to handle wide format from SQL
+        FIXED VERSION - Properly handles wide-format SQL results
         
-        Handles two formats:
+        Compute metrics summary - handles both LONG and WIDE formats
+        
+        Formats supported:
         1. LONG FORMAT: columns = [model_name, metric_name, metric_value]
         2. WIDE FORMAT: columns = [model_name, avg_test_rmse, avg_test_r2, ...]
         """
         metrics_summary = {}
         
-        print(f"\n[MetricsSummary] DataFrame shape: {self.df.shape}")
-        print(f"[MetricsSummary] Columns: {list(self.df.columns)}")
-        print(f"[MetricsSummary] Column dtypes:\n{self.df.dtypes}")
-        print(f"[MetricsSummary] Sample row:\n{self.df.iloc[0] if len(self.df) > 0 else 'EMPTY'}")
+        print(f"\n{'='*60}")
+        print(f"[MetricsSummary] Starting computation")
+        print(f"{'='*60}")
+        print(f"DataFrame shape: {self.df.shape}")
+        print(f"Columns: {list(self.df.columns)}")
+        print(f"Column dtypes:\n{self.df.dtypes}")
+        
+        if len(self.df) > 0:
+            print(f"\n[Sample Row]:")
+            print(self.df.iloc[0].to_dict())
         
         # Check if we have model_name column
         if 'model_name' not in self.df.columns:
             print("[MetricsSummary] ERROR: No 'model_name' column found!")
             return {}
         
-        # ===== LONG FORMAT DETECTION =====
-        if "metric_name" in self.df.columns and "metric_value" in self.df.columns:
-            print("[MetricsSummary] Detected LONG format (metric_name + metric_value)")
-            
-            for metric in self.df["metric_name"].unique():
-                metric_df = self.df[self.df["metric_name"] == metric]
-                metric_summary = {}
-                
-                for model in metric_df["model_name"].unique():
-                    values = metric_df[metric_df["model_name"] == model]["metric_value"].dropna()
-                    if len(values) > 0:
-                        metric_summary[model] = {
-                            "mean": float(values.mean()),
-                            "std": float(values.std()) if len(values) > 1 else 0.0,
-                            "min": float(values.min()),
-                            "max": float(values.max()),
-                            "count": int(len(values)),
-                        }
-                
-                if metric_summary:
-                    metrics_summary[metric] = metric_summary
+        # ===== FORMAT DETECTION =====
+        is_long_format = "metric_name" in self.df.columns and "metric_value" in self.df.columns
         
-        # ===== WIDE FORMAT DETECTION =====
+        if is_long_format:
+            print("\n[MetricsSummary] Detected LONG format (metric_name + metric_value)")
+            return self._compute_metrics_long_format()
         else:
-            print("[MetricsSummary] Detected WIDE format (separate metric columns)")
-            
-            # Identify metric columns with improved detection
-            non_metric_cols = ['model_name', 'model_type', 'model_id', 'execution_id', 
-                            'algorithm', 'version', 'use_case', 'data_split', 'created_at']
-            
-            # Find metric columns - more lenient detection
-            metric_cols = []
-            for col in self.df.columns:
-                if col not in non_metric_cols:
-                    # Try to convert to numeric if it's object dtype
-                    col_data = self.df[col]
-                    
-                    # If object dtype, try to convert
-                    if col_data.dtype == 'object':
-                        try:
-                            col_data = pd.to_numeric(col_data, errors='coerce')
-                        except:
-                            continue
-                    
-                    # Check if it's numeric (including after conversion)
-                    if pd.api.types.is_numeric_dtype(col_data):
-                        # Check if it has any non-null numeric values
-                        if col_data.notna().sum() > 0:
-                            metric_cols.append(col)
-                            print(f"[MetricsSummary] Found metric column: {col} (dtype: {col_data.dtype})")
-            
-            print(f"[MetricsSummary] Found {len(metric_cols)} metric columns: {metric_cols}")
-            
-            if not metric_cols:
-                print("[MetricsSummary] ERROR: No numeric metric columns found!")
-                print(f"[MetricsSummary] Available columns: {list(self.df.columns)}")
-                print(f"[MetricsSummary] Sample data:\n{self.df.head(3)}")
-                return {}
-            
-            # Process each metric column
-            for metric_col in metric_cols:
-                # Clean metric name: avg_test_rmse -> rmse
-                metric_name = metric_col.lower()
-                metric_name = metric_name.replace("avg_", "")
-                metric_name = metric_name.replace("test_", "")
-                metric_name = metric_name.replace("val_", "")
-                metric_name = metric_name.replace("_score", "")
-                
-                print(f"[MetricsSummary] Processing {metric_col} as {metric_name}")
-                
-                metric_summary = {}
-                
-                # For wide format, each row is one model with all metrics
-                for idx, row in self.df.iterrows():
-                    model = row["model_name"]
-                    value = row[metric_col]
-                    
-                    # Skip null/nan values
-                    if pd.isna(value):
-                        print(f"  [MetricsSummary] Skipping {model}: {metric_col} is NULL")
-                        continue
-                    
-                    # Convert to float
-                    try:
-                        value = float(value)
-                    except (ValueError, TypeError):
-                        print(f"  [MetricsSummary] Skipping {model}: Cannot convert {value} to float")
-                        continue
-                    
-                    # In wide format, we typically have one row per model
-                    # So mean = value (no aggregation needed)
-                    metric_summary[model] = {
-                        "mean": value,
-                        "std": 0.0,  # No std in wide format with single value
-                        "min": value,
-                        "max": value,
-                        "count": 1,
-                    }
-                    
-                    print(f"  -> Added {model}: {metric_name} = {value:.4f}")
-                
-                if metric_summary:
-                    metrics_summary[metric_name] = metric_summary
-                    print(f"  -> Stored metric '{metric_name}' with {len(metric_summary)} models")
+            print("\n[MetricsSummary] Detected WIDE format (separate metric columns)")
+            return self._compute_metrics_wide_format()
+
+
+    def _compute_metrics_long_format(self) -> Dict[str, Any]:
+        """Handle LONG format: [model_name, metric_name, metric_value]"""
+        metrics_summary = {}
         
-        print(f"\n[MetricsSummary] FINAL SUMMARY:")
-        print(f"  Total metrics: {len(metrics_summary)}")
+        for metric in self.df["metric_name"].unique():
+            metric_df = self.df[self.df["metric_name"] == metric]
+            metric_summary = {}
+            
+            for model in metric_df["model_name"].unique():
+                values = metric_df[metric_df["model_name"] == model]["metric_value"].dropna()
+                if len(values) > 0:
+                    # Convert to float, handle any conversion errors
+                    try:
+                        values_float = values.astype(float)
+                        metric_summary[model] = {
+                            "mean": float(values_float.mean()),
+                            "std": float(values_float.std()) if len(values_float) > 1 else 0.0,
+                            "min": float(values_float.min()),
+                            "max": float(values_float.max()),
+                            "count": int(len(values_float)),
+                        }
+                        print(f"  [Long] {model} - {metric}: {metric_summary[model]['mean']:.4f}")
+                    except Exception as e:
+                        print(f"  [Long] ERROR converting {model} - {metric}: {e}")
+                        continue
+            
+            if metric_summary:
+                metrics_summary[metric] = metric_summary
+        
+        print(f"\n[Long Format] Found {len(metrics_summary)} metrics")
+        return metrics_summary
+
+
+    def _compute_metrics_wide_format(self) -> Dict[str, Any]:
+        """
+        ENHANCED VERSION - Handle WIDE format: [model_name, avg_test_rmse, avg_test_r2, ...]
+        
+        This is the format typically returned by SQL queries with aggregated metrics.
+        """
+        metrics_summary = {}
+        
+        # Identify non-metric columns
+        non_metric_cols = [
+            'model_name', 'model_type', 'model_id', 'execution_id', 
+            'algorithm', 'version', 'use_case', 'data_split', 'created_at',
+            'trained_date', 'prediction_date', 'status', 'description'
+        ]
+        
+        # Find metric columns with improved detection
+        metric_cols = []
+        for col in self.df.columns:
+            if col in non_metric_cols:
+                continue
+            
+            # Get column data
+            col_data = self.df[col]
+            
+            # Try to convert to numeric if it's object dtype
+            if col_data.dtype == 'object':
+                try:
+                    col_data = pd.to_numeric(col_data, errors='coerce')
+                except:
+                    continue
+            
+            # Check if it's numeric and has non-null values
+            if pd.api.types.is_numeric_dtype(col_data):
+                # Check if it has any non-null numeric values
+                if col_data.notna().sum() > 0:
+                    metric_cols.append(col)
+                    print(f"[Wide] Found metric column: {col} (dtype: {col_data.dtype}, non-null: {col_data.notna().sum()})")
+        
+        print(f"\n[Wide Format] Found {len(metric_cols)} metric columns: {metric_cols}")
+        
+        if not metric_cols:
+            print("[Wide Format] ERROR: No numeric metric columns found!")
+            print(f"Available columns: {list(self.df.columns)}")
+            print(f"Sample data:\n{self.df.head(2)}")
+            return {}
+        
+        # Process each metric column
+        for metric_col in metric_cols:
+            # Clean metric name: avg_test_rmse -> rmse
+            metric_name = metric_col.lower()
+            
+            # Remove common prefixes
+            for prefix in ['avg_', 'mean_', 'test_', 'val_', 'train_']:
+                metric_name = metric_name.replace(prefix, '')
+            
+            # Remove common suffixes
+            for suffix in ['_score', '_value', '_metric']:
+                metric_name = metric_name.replace(suffix, '')
+            
+            print(f"\n[Wide] Processing {metric_col} as '{metric_name}'")
+            
+            metric_summary = {}
+            
+            # For wide format, each row is one model with all metrics
+            for idx, row in self.df.iterrows():
+                model = row["model_name"]
+                value = row[metric_col]
+                
+                # Skip null/nan values
+                if pd.isna(value):
+                    print(f"  [Wide] Skipping {model}: {metric_col} is NULL")
+                    continue
+                
+                # Convert to float
+                try:
+                    value = float(value)
+                except (ValueError, TypeError) as e:
+                    print(f"  [Wide] Skipping {model}: Cannot convert {value} to float ({e})")
+                    continue
+                
+                # In wide format, we typically have one value per model
+                # So mean = value (no aggregation needed across multiple rows)
+                metric_summary[model] = {
+                    "mean": value,
+                    "std": 0.0,  # No std in wide format with single value per model
+                    "min": value,
+                    "max": value,
+                    "count": 1,
+                }
+                
+                print(f"  -> {model}: {metric_name} = {value:.6f}")
+            
+            if metric_summary:
+                metrics_summary[metric_name] = metric_summary
+                print(f"  [Wide] Stored metric '{metric_name}' with {len(metric_summary)} models")
+            else:
+                print(f"  [Wide] WARNING: No valid data for metric '{metric_name}'")
+        
+        # ===== FINAL VALIDATION =====
+        print(f"\n{'='*60}")
+        print(f"[MetricsSummary] FINAL SUMMARY")
+        print(f"{'='*60}")
+        print(f"Total metrics found: {len(metrics_summary)}")
+        
         for metric, models in metrics_summary.items():
-            print(f"  - {metric}: {len(models)} models")
+            print(f"\n  Metric: {metric}")
+            print(f"  Models: {len(models)}")
+            
             # Show first model as example
             if models:
                 first_model = list(models.keys())[0]
-                print(f"    Example: {first_model} = {models[first_model]['mean']:.4f}")
+                first_value = models[first_model]
+                print(f"  Example: {first_model} = {first_value['mean']:.6f}")
+        
+        if not metrics_summary:
+            print("\n⚠ WARNING: No metrics extracted!")
+            print("Possible issues:")
+            print("  1. No numeric columns found")
+            print("  2. All values are NULL")
+            print("  3. Column names don't match expected patterns")
+            print(f"\nDataFrame info:")
+            print(f"  Shape: {self.df.shape}")
+            print(f"  Columns: {list(self.df.columns)}")
+            print(f"  Dtypes:\n{self.df.dtypes}")
+        
+        print(f"{'='*60}\n")
         
         return metrics_summary
 
@@ -512,9 +586,13 @@ class AnalysisAggregator:
     # DRIFT ANALYSIS
     # -------------------------
     def _analyze_drift(self) -> Dict[str, Any]:
-        """Analyze model drift patterns"""
         drift_summary = {}
         story_parts = []
+        
+        # Extract model list
+        models_analyzed = []
+        if "model_name" in self.df.columns:
+            models_analyzed = sorted(self.df["model_name"].unique().tolist())
         
         if "model_name" in self.df.columns and "drift_detected" in self.df.columns:
             for model in self.df["model_name"].unique():
@@ -564,16 +642,22 @@ class AnalysisAggregator:
             "story": story,
             "story_elements": {"drift_summary": drift_summary},
             "computed_values": merged,
-            "raw_metrics": raw_metrics
+            "raw_metrics": raw_metrics,
+            "models_analyzed": models_analyzed  # ← Add this
         }
 
     # -------------------------
     # ENSEMBLE VS BASE
     # -------------------------
+    
     def _analyze_ensemble_vs_base(self) -> Dict[str, Any]:
-        """Compare ensemble to base models"""
         ensemble_metrics = {}
         base_metrics = {}
+        
+        # Extract model list
+        models_analyzed = []
+        if "model_name" in self.df.columns:
+            models_analyzed = sorted(self.df["model_name"].unique().tolist())
         
         if "model_type" in self.df.columns and "model_name" in self.df.columns:
             ensemble_df = self.df[self.df["model_type"] == "ensemble"]
@@ -602,7 +686,6 @@ class AnalysisAggregator:
                 pct_change = ((ens_val - base_val) / abs(base_val)) * 100
                 abs_diff = ens_val - base_val
                 
-                # Determine if ensemble is better
                 lower_better = any(lb in metric.lower() for lb in ["rmse", "mae", "mse", "mape"])
                 ensemble_better = (abs_diff < 0) if lower_better else (abs_diff > 0)
                 
@@ -647,19 +730,23 @@ class AnalysisAggregator:
             "story": story,
             "story_elements": {"advantages": advantages},
             "computed_values": merged,
-            "raw_metrics": raw_metrics
+            "raw_metrics": raw_metrics,
+            "models_analyzed": models_analyzed  # ← Add this
         }
 
     # -------------------------
     # FEATURE IMPORTANCE
     # -------------------------
     def _analyze_feature_importance(self) -> Dict[str, Any]:
-        """Analyze feature importance patterns"""
         top_features = {}
         story_parts = ["FEATURE IMPORTANCE ANALYSIS:"]
         
+        # Extract model list
+        models_analyzed = []
+        if "model_name" in self.df.columns:
+            models_analyzed = sorted(self.df["model_name"].unique().tolist())
+        
         if "feature_name" in self.df.columns and "importance_score" in self.df.columns:
-            # Group by feature and aggregate
             feature_groups = self.df.groupby("feature_name")["importance_score"].agg(['mean', 'std', 'count'])
             feature_groups = feature_groups.sort_values('mean', ascending=False)
             
@@ -696,7 +783,8 @@ class AnalysisAggregator:
             "story": story,
             "story_elements": {"top_features": top_features},
             "computed_values": merged,
-            "raw_metrics": raw_metrics
+            "raw_metrics": raw_metrics,
+            "models_analyzed": models_analyzed  # ← Add this
         }
 
     # -------------------------
@@ -1039,7 +1127,11 @@ class AnalysisAggregator:
         }
 
     def _analyze_general(self) -> Dict[str, Any]:
-        """General analysis for unspecified queries"""
+        # Extract model list
+        models_analyzed = []
+        if "model_name" in self.df.columns:
+            models_analyzed = sorted(self.df["model_name"].unique().tolist())
+        
         summary = {
             "total_rows": int(len(self.df)),
             "columns": list(self.df.columns),
@@ -1050,7 +1142,10 @@ class AnalysisAggregator:
         story_parts.append(f"  - Total rows: {summary['total_rows']}")
         story_parts.append(f"  - Columns: {len(summary['columns'])}")
         
-        # Basic stats on numeric columns
+        if models_analyzed:
+            story_parts.append(f"  - Models found: {len(models_analyzed)}")
+            story_parts.append(f"  - Model list: {', '.join(models_analyzed[:5])}")
+        
         if summary['numeric_columns']:
             for col in summary['numeric_columns'][:5]:
                 summary[f"{col}_mean"] = float(self.df[col].mean())
@@ -1074,19 +1169,20 @@ class AnalysisAggregator:
             "story": story,
             "story_elements": {"summary": summary},
             "computed_values": merged,
-            "raw_metrics": raw_metrics
+            "raw_metrics": raw_metrics,
+            "models_analyzed": models_analyzed  # ← Add this
         }
 
     def _empty_result(self) -> Dict[str, Any]:
-        """Return result for empty data"""
+        """Return result for empty data - ENHANCED"""
         return {
             "analysis_type": "empty",
             "story": "NO_DATA: No data available for analysis.",
             "story_elements": {},
             "computed_values": {"timestamp": datetime.utcnow().isoformat()},
-            "raw_metrics": {}
+            "raw_metrics": {},
+            "models_analyzed": []  # ← Add this
         }
-
 
 def analyze_data(data: List[Dict], query_context: Dict) -> Dict[str, Any]:
     """Main entry point for analysis"""
