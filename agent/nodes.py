@@ -263,6 +263,7 @@ CRITICAL QUERY CLASSIFICATION RULES:
    - "tell me about all models for NRx" → comparison_type="performance" (NOT list!)
    - "show me models for HCP" → comparison_type="performance"
    - "what models do we have" → comparison_type="performance"
+   - "what models have we ran" → comparison_type="performance"
    - These are asking to SEE model information, which requires comparison analysis
 
 2. **"Compare" queries:**
@@ -656,6 +657,7 @@ CRITICAL INSTRUCTIONS:
 EXAMPLE QUERIES:
 
 === Example 1: "Tell me about all models for NRx forecasting" ===
+    Example 1a: "What models have we ran for HCP engagement"
 ```sql
 SELECT 
     m.model_name,
