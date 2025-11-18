@@ -290,6 +290,9 @@ Examples:
 - "which models" → comparison_type=performance (show all models)
 
 Extract all relevant information. BE GENEROUS with assumptions when context exists.
+You MUST include all fields defined in the structured model.
+If you cannot infer a field, set it to null.
+NEVER omit fields.
 """
     
     structured_llm = llm.with_structured_output(ParsedIntent, method="function_calling")
@@ -721,10 +724,12 @@ When comparison_type = "performance" OR query asks about models, YOU MUST:
      **MUST include performance metrics** (not just metadata)
    - These queries REQUIRE metrics even if not explicitly asked
    
-2. **Metric Selection by Use Case:**
-   - NRx_forecasting → RMSE, MAE, R2 (regression metrics)
-   - HCP_engagement → AUC_ROC, Accuracy, Precision, Recall (classification metrics)
-   - Default → Include both types
+2. Metric Selection Rules:
+- Regression metrics (rmse, mae, r2) are used across MANY use cases 
+  including NRx forecasting, market share, territory forecasting, competitor share, pricing models.
+- Therefore regression metrics DO NOT imply a specific use_case.
+- Only apply a use_case filter when the USER explicitly mentions a use_case.
+- If the user does NOT specify a use_case, return models from ALL use cases.
 
 3. **Use AGGREGATION for metrics:**
    - Use AVG() with FILTER to get one row per model
@@ -853,7 +858,9 @@ VALIDATION CHECKLIST:
 
 {"🔴 RETRY MODE: Use broader filters and LEFT JOINs" if retry_count > 0 else ""}
 
-⚠️ REMINDER: For ANY query about models (even just "list models"), you MUST include performance metrics!
+You MUST include all fields defined in the structured model.
+If you cannot infer a field, set it to null.
+NEVER omit fields.
 
 Generate the SQL query now:
 """
