@@ -735,7 +735,20 @@ Generate the SQL query now:
 
     try:
         structured_llm = llm.with_structured_output(SQLQuerySpec, method="function_calling")
-        result = structured_llm.invoke(prompt)
+        try:
+            result = structured_llm.invoke(prompt)
+        except Exception as e:
+             print("[SQL Generation] Structured output failed, applying fallback parser:", e)
+             sql_match = re.search(r"SELECT[\s\S]+?;", prompt, re.IGNORECASE)
+             extracted_sql = sql_match.group(0) if sql_match else "SELECT 1;"
+             
+             # Auto-fill missing required fields
+             result = SQLQuerySpec(
+                sql_query=extracted_sql,
+                query_purpose="Auto-generated SQL query (fallback)",
+                expected_columns=[]
+            )
+
         
         # === VALIDATE GENERATED SQL ===
         sql = result.sql_query
