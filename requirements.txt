@@ -13,3 +13,4 @@ python-dotenv>=1.0.1
 streamlit>=1.40.2
 typing-extensions>=4.12.2
 tqdm>=4.67.1
+tabulate
