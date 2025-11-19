@@ -21,7 +21,7 @@ from agent.drift_query_helper import (
 )
 
 llm = ChatOpenAI(
-    model='gpt-4.1-nano',
+    model='gpt-4.1-mini',
     api_key=os.getenv("gpt_api_key"),
     stream_usage=True,
     temperature=0.7
@@ -660,13 +660,13 @@ def is_drift_query(user_query: str) -> bool:
 
 def sql_generation_agent(state: AgentState) -> dict:
     """
-    FIXED VERSION - Better SQL generation for all query types
+    ENHANCED VERSION - Uses semantic schema retrieval instead of full schema injection
     
     Generates SQL with:
-    - Proper aggregation for wide-format results
-    - Better handling of "list/show/tell me about" queries
-    - Improved retry logic
-    - Comprehensive error messages
+    - Minimal core schema (always present)
+    - Semantically retrieved detailed schema (only relevant tables)
+    - Auto-expanded JOIN dependencies
+    - Graceful retry with expanded retrieval
     """
     execution_path = state.get('execution_path', [])
     execution_path.append('sql_generation')
@@ -709,12 +709,28 @@ def sql_generation_agent(state: AgentState) -> dict:
     previous_sql = state.get('generated_sql')
     previous_error = state.get('sql_error_feedback')
     
+    # === RETRIEVE RELEVANT SCHEMA (Hybrid Approach) ===
+    from core.schema_retreiver import retrieve_relevant_schema, format_schema_summary
+    
+    print(f"\n[SQL Generation] Retrieving schema (attempt {retry_count + 1})...")
+    
+    schema_context = retrieve_relevant_schema(
+        query=user_query,
+        use_case=use_case,
+        comparison_type=comparison_type,
+        models_requested=models_requested,
+        retry_count=retry_count,
+        top_k=3  # Will be auto-adjusted based on retry_count
+    )
+    
+    print(f"[SQL Generation] Schema context size: {len(schema_context)} characters")
+    
     # Build retry context if this is a retry attempt
     retry_context = ""
     if retry_count > 0 and previous_sql:
         retry_context = f"""
 ⚠️ RETRY ATTEMPT {retry_count}/3:
-The previous query returned 0 rows. Please review and modify the query to be less restrictive.
+The previous query returned 0 rows. Review and modify the query.
 
 Previous SQL that failed:
 ```sql
@@ -724,41 +740,23 @@ Previous SQL that failed:
 Issue: {previous_error}
 
 CRITICAL FIXES NEEDED:
-1. **Use LEFT JOINs** instead of INNER JOINs to avoid eliminating rows
-2. **Relax ILIKE filters** - Make patterns more general (e.g., '%random%' instead of '%random forest%')
-3. **Remove unnecessary filters** - Start with just model table, add filters gradually
-4. **Use aggregation** - For performance metrics, aggregate using AVG() to get one row per model
-5. **Verify data exists** - Query the models table first to confirm models exist
+1. **Use LEFT JOINs** instead of INNER JOINs
+2. **Relax ILIKE filters** - Use broader patterns (e.g., '%random%' not '%random forest%')
+3. **Remove unnecessary filters** - Start with fewer constraints
+4. **Verify column names** - Double-check against schema provided
+5. **Use aggregation with FILTER** - For metrics, use AVG() with FILTER clause
+6. **Check GROUP BY** - Ensure all non-aggregated columns are in GROUP BY
 
-EXAMPLE OF WORKING QUERY:
-```sql
-SELECT 
-    m.model_name,
-    m.model_type,
-    m.algorithm,
-    m.use_case,
-    AVG(pm.metric_value) FILTER (WHERE pm.metric_name = 'rmse' AND pm.data_split = 'test') as avg_test_rmse,
-    AVG(pm.metric_value) FILTER (WHERE pm.metric_name = 'r2_score' AND pm.data_split = 'test') as avg_test_r2,
-    AVG(pm.metric_value) FILTER (WHERE pm.metric_name = 'mae' AND pm.data_split = 'test') as avg_test_mae
-FROM models m
-LEFT JOIN latest_model_executions lme ON m.model_id = lme.model_id
-LEFT JOIN performance_metrics pm ON lme.execution_id = pm.execution_id
-WHERE m.is_active = true
-  AND m.use_case ILIKE '%nrx%'
-GROUP BY m.model_name, m.model_type, m.algorithm, m.use_case
-HAVING COUNT(DISTINCT lme.execution_id) > 0
-LIMIT 100;
-```
-
-Be MORE lenient with filters on retry attempts.
+More schema context has been provided below to help with retry.
 """
     
-    # === ENHANCED PROMPT WITH BETTER EXAMPLES ===
+    # === BUILD ENHANCED PROMPT ===
     prompt = f"""
 You are a SQL expert specializing in pharma commercial analytics databases. 
 Generate a **valid PostgreSQL SELECT query** that answers the user's question.
 
 USER QUERY: {user_query}
+context_docs:{context_docs}
 
 PARSED INTENT:
 - Use Case: {use_case}
@@ -769,184 +767,60 @@ PARSED INTENT:
 
 {retry_context}
 
-{SCHEMA_CONTEXT}
+{schema_context}
 
-{context_docs if context_docs else ""}
 {personalized_context_section}
 
-CRITICAL INSTRUCTIONS:
+QUERY GENERATION GUIDELINES:
 
-⚠️ **MANDATORY FOR ALL PERFORMANCE QUERIES**: ⚠️
-When comparison_type = "performance" OR query asks about models, YOU MUST:
-1. JOIN to latest_model_executions AND performance_metrics tables
-2. Include AVG() aggregations for ALL relevant metrics
-3. Use FILTER clause to separate metrics by data_split
-4. Return ONE ROW per model with ALL metrics as columns (WIDE format)
+1. **Follow the core schema rules** (LEFT JOIN, is_active filter, etc.)
 
-NEVER return just model metadata without metrics for performance queries, include metric columns like avg_test_rmse, avg_test_auc, etc.
+2. **Use the detailed schema provided above** for column names and relationships
 
-1. **Query Type Detection:**
-   - "tell me about models", "show me models", "what models", "list models" → 
-     **MUST include performance metrics** (not just metadata)
-   - These queries REQUIRE metrics even if not explicitly asked
-   
-2. Metric Selection Rules:
-- Regression metrics (rmse, mae, r2) are used across MANY use cases 
-  including NRx forecasting, market share, territory forecasting, competitor share, pricing models.
-- Therefore regression metrics DO NOT imply a specific use_case.
-- Only apply a use_case filter when the USER explicitly mentions a use_case.
-- If the user does NOT specify a use_case, return models from ALL use cases.
+3. **For performance metrics queries**:
+   - MUST use AVG() with FILTER clause to create WIDE format
+   - Example: AVG(pm.metric_value) FILTER (WHERE pm.metric_name = 'rmse' AND pm.data_split = 'test') as avg_test_rmse
+   - Include multiple metrics as separate FILTER aggregations
+   - GROUP BY model attributes
 
-3. **Use AGGREGATION for metrics:**
-   - Use AVG() with FILTER to get one row per model
-   - Example: `AVG(pm.metric_value) FILTER (WHERE pm.metric_name = 'rmse') as avg_rmse`
-   - This creates WIDE format: [model_name, avg_test_rmse, avg_test_r2, avg_test_mae, ...]
+4. **For model comparisons**:
+   - Use latest_model_executions view (not model_executions directly)
+   - Filter by is_active = true
+   - Include execution_count to verify data exists
+   - Use HAVING COUNT(DISTINCT lme.execution_id) > 0
 
-4. **Required JOINs for performance queries:**
-   - Always start with `FROM models m`
-   - Use `LEFT JOIN latest_model_executions lme` (not INNER JOIN!)
-   - Use `LEFT JOIN performance_metrics pm` to get metrics
-   - LEFT JOINs ensure we don't lose models that have no metrics
+5. **Validation checklist**:
+   □ Starts with SELECT
+   □ Uses LEFT JOIN (not INNER JOIN)
+   □ Filters by is_active = true
+   □ Uses proper aggregation for metrics (AVG with FILTER)
+   □ Has GROUP BY for aggregated queries
+   □ Has LIMIT clause
+   □ Uses ILIKE for case-insensitive matching
+   □ Handles NULLs with NULLS LAST in ORDER BY
 
-5. **Filtering:**
-   - Always include `WHERE m.is_active = true`
-   - Use ILIKE for case-insensitive matching: `m.use_case ILIKE '%nrx%'`
-   - For model names, use broad patterns: `m.model_name ILIKE '%random%'`
-   - Add `AND pm.data_split = 'test'` when querying performance_metrics
-
-6. **Grouping:**
-   - GROUP BY: m.model_name, m.model_type, m.algorithm, m.use_case
-   - Add HAVING clause to ensure models have executions: `HAVING COUNT(DISTINCT lme.execution_id) > 0`
-
-7. **Performance:**
-   - Add `LIMIT 100` to prevent huge result sets
-   - Use indexes: Always filter on is_active first
-
-EXAMPLE QUERIES:
-
-=== Example 1: "What models have we run for HCP engagement" ===
-```sql
-SELECT 
-    m.model_name,
-    m.model_type,
-    m.algorithm,
-    m.use_case,
-    m.version,
-    m.trained_date,
-    COUNT(DISTINCT lme.execution_id) as execution_count,
-    -- Classification metrics for HCP engagement
-    AVG(pm.metric_value) FILTER (WHERE pm.metric_name = 'auc_roc' AND pm.data_split = 'test') as avg_test_auc,
-    AVG(pm.metric_value) FILTER (WHERE pm.metric_name = 'accuracy' AND pm.data_split = 'test') as avg_test_accuracy,
-    AVG(pm.metric_value) FILTER (WHERE pm.metric_name = 'precision' AND pm.data_split = 'test') as avg_test_precision,
-    AVG(pm.metric_value) FILTER (WHERE pm.metric_name = 'recall' AND pm.data_split = 'test') as avg_test_recall,
-    AVG(pm.metric_value) FILTER (WHERE pm.metric_name = 'f1_score' AND pm.data_split = 'test') as avg_test_f1
-FROM models m
-LEFT JOIN latest_model_executions lme ON m.model_id = lme.model_id
-LEFT JOIN performance_metrics pm ON lme.execution_id = pm.execution_id
-WHERE m.is_active = true
-  AND m.use_case ILIKE '%hcp%engagement%'
-GROUP BY m.model_name, m.model_type, m.algorithm, m.use_case, m.version, m.trained_date
-HAVING COUNT(DISTINCT lme.execution_id) > 0
-ORDER BY avg_test_auc DESC NULLS LAST
-LIMIT 100;
-```
-
-=== Example 2: "Tell me about all models for NRx forecasting" ===
-```sql
-SELECT 
-    m.model_name,
-    m.model_type,
-    m.algorithm,
-    m.use_case,
-    m.version,
-    m.trained_date,
-    COUNT(DISTINCT lme.execution_id) as execution_count,
-    -- Regression metrics for NRx forecasting
-    AVG(pm.metric_value) FILTER (WHERE pm.metric_name = 'rmse' AND pm.data_split = 'test') as avg_test_rmse,
-    AVG(pm.metric_value) FILTER (WHERE pm.metric_name = 'mae' AND pm.data_split = 'test') as avg_test_mae,
-    AVG(pm.metric_value) FILTER (WHERE pm.metric_name = 'r2_score' AND pm.data_split = 'test') as avg_test_r2
-FROM models m
-LEFT JOIN latest_model_executions lme ON m.model_id = lme.model_id
-LEFT JOIN performance_metrics pm ON lme.execution_id = pm.execution_id
-WHERE m.is_active = true
-  AND m.use_case ILIKE '%nrx%'
-GROUP BY m.model_name, m.model_type, m.algorithm, m.use_case, m.version, m.trained_date
-HAVING COUNT(DISTINCT lme.execution_id) > 0
-ORDER BY avg_test_rmse ASC NULLS LAST
-LIMIT 100;
-
-
-=== Example 3: Model Drift Detection ===
-SELECT
-m.model_name,
-m.model_type,
-m.use_case,
--- Calculate drift between time periods
-AVG(CASE WHEN me.execution_date >= CURRENT_DATE - INTERVAL '7 days'
-THEN pm.metric_value END) as current_period_avg,
-AVG(CASE WHEN me.execution_date BETWEEN CURRENT_DATE - INTERVAL '30 days'
-AND CURRENT_DATE - INTERVAL '7 days'
-THEN pm.metric_value END) as baseline_avg,
--- Drift score (percentage change)
-ABS((AVG(CASE WHEN me.execution_date >= CURRENT_DATE - INTERVAL '7 days'
-THEN pm.metric_value END) -
-AVG(CASE WHEN me.execution_date BETWEEN CURRENT_DATE - INTERVAL '30 days'
-AND CURRENT_DATE - INTERVAL '7 days'
-THEN pm.metric_value END)) /
-NULLIF(AVG(CASE WHEN me.execution_date BETWEEN CURRENT_DATE - INTERVAL '30 days'
-AND CURRENT_DATE - INTERVAL '7 days'
-THEN pm.metric_value END), 0) * 100) as drift_percentage
-FROM models m
-LEFT JOIN model_executions me ON m.model_id = me.model_id
-LEFT JOIN performance_metrics pm ON me.execution_id = pm.execution_id
-WHERE m.is_active = true
-AND m.use_case ILIKE '%nrx%'
-AND pm.metric_name = 'rmse'
-AND pm.data_split = 'test'
-AND me.execution_date >= CURRENT_DATE - INTERVAL '30 days'
-GROUP BY m.model_name, m.model_type, m.use_case
-HAVING COUNT(DISTINCT me.execution_id) >= 2
-ORDER BY drift_percentage DESC NULLS LAST;
-
-
-```
-
-VALIDATION CHECKLIST:
-□ Starts with SELECT
-□ Uses LEFT JOIN (not INNER JOIN)
-□ Filters by is_active = true
-□ Uses AVG() with FILTER for metrics (wide format)
-□ Includes GROUP BY for aggregated queries
-□ Has LIMIT clause
-□ Uses ILIKE for string matching
-□ Returns ONE row per model (aggregated)
-□ Includes at least 3 performance metrics for comparison queries
-
-{"🔴 RETRY MODE: Use broader filters and LEFT JOINs" if retry_count > 0 else ""}
-
-You MUST include all fields defined in the structured model.
-If you cannot infer a field, set it to null.
-NEVER omit fields.
+{"🔴 RETRY MODE: Broader filters, verify column names against schema" if retry_count > 0 else ""}
 
 Generate the SQL query now:
 """
 
     try:
         structured_llm = llm.with_structured_output(SQLQuerySpec, method="function_calling")
+        
         try:
             result = structured_llm.invoke(prompt)
         except Exception as e:
-             print("[SQL Generation] Structured output failed, applying fallback parser:", e)
-             sql_match = re.search(r"SELECT[\s\S]+?;", prompt, re.IGNORECASE)
-             extracted_sql = sql_match.group(0) if sql_match else "SELECT 1;"
-             
-             # Auto-fill missing required fields
-             result = SQLQuerySpec(
+            print(f"[SQL Generation] Structured output failed, applying fallback parser: {e}")
+            # Fallback: Extract SQL from response
+            import re
+            sql_match = re.search(r"SELECT[\s\S]+?;", prompt, re.IGNORECASE)
+            extracted_sql = sql_match.group(0) if sql_match else "SELECT 1;"
+            
+            result = SQLQuerySpec(
                 sql_query=extracted_sql,
                 query_purpose="Auto-generated SQL query (fallback)",
                 expected_columns=[]
             )
-
         
         # === VALIDATE GENERATED SQL ===
         sql = result.sql_query
@@ -959,11 +833,19 @@ Generate the SQL query now:
             issues.append("⚠ Using AVG() without GROUP BY - may cause error")
         if 'LIMIT' not in sql.upper():
             issues.append("⚠ No LIMIT clause - may return too many rows")
+        if not any(filter_clause in sql.upper() for filter_clause in ['IS_ACTIVE = TRUE', "IS_ACTIVE='TRUE'", "IS_ACTIVE=TRUE"]):
+            issues.append("⚠ Missing is_active = true filter")
         
         if issues:
             print(f"\n[SQL Validation] Potential issues found:")
             for issue in issues:
                 print(f"  {issue}")
+        
+        # Log schema retrieval stats
+        print(f"\n[SQL Generation] Summary:")
+        print(f"  - Schema context size: {len(schema_context)} chars")
+        print(f"  - Retry attempt: {retry_count}")
+        print(f"  - Generated SQL length: {len(sql)} chars")
         
         return {
             "generated_sql": result.sql_query,
