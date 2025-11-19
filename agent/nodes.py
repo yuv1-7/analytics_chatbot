@@ -14,6 +14,14 @@ import plotly.express as px
 import plotly.graph_objects as go
 import pandas as pd
 import numpy as np
+from agent.drift_query_helper import (
+    detect_drift_query_intent,
+    should_use_drift_sql,
+    get_drift_sql_query
+)
+
+
+
 
 
 llm = ChatOpenAI(
@@ -87,6 +95,7 @@ def get_personalized_context_section(state: AgentState) -> str:
 
 class ParsedIntent(BaseModel):
     use_case: Optional[str] = Field(
+        default="all_use_cases",
         description="One of: NRx_forecasting, HCP_engagement, feature_importance_analysis, model_drift_detection, messaging_optimization"
     )
     models_requested: Optional[List[str]] = Field(
@@ -303,8 +312,20 @@ NEVER omit fields.
         context_messages.extend(messages[-6:])
     
     context_messages.append(HumanMessage(content=query))
-    
+
+    # FIRST: Get result from LLM
     result = structured_llm.invoke(context_messages)
+
+    # THEN: drift detection
+    result_dict = result.dict()
+    result_dict = detect_drift_query_intent(query, result_dict)
+
+    # Update result object safely
+    result.comparison_type = result_dict.get("comparison_type", result.comparison_type)
+
+    if result_dict.get("requires_drift_analysis"):
+        result.comparison_type = "drift"
+
     
     execution_path = state.get('execution_path', [])
     execution_path.append('query_understanding')
@@ -557,81 +578,24 @@ def sql_generation_agent(state: AgentState) -> dict:
     user_query = state.get('user_query', '')
     
 
-        # === DRIFT QUERY OVERRIDE (must run before performance logic) ===
-    if is_drift_query(user_query):
-        drift_prompt = f"""
-        You are a SQL expert specializing in model drift detection.
-
-        The user is asking about MODEL DRIFT, so you MUST use the
-        `drift_detection_results` table.
-
-        RULES:
-        ... (same prompt text you already have) ...
-        USER QUESTION: {user_query}
-
-        SCHEMA:
-        {SCHEMA_CONTEXT}
-
-        Generate ONLY a PostgreSQL SELECT query.
-        """
-
-        # Call the LLM (structured) to generate SQL for drift queries
+    if should_use_drift_sql(state):
+        print("[SQL] Detected DRIFT query - using specialized SQL")
+        
         try:
-            structured_llm = llm.with_structured_output(SQLQuerySpec, method="function_calling")
-            try:
-                drift_result = structured_llm.invoke(drift_prompt)
-            except Exception as e:
-                # structured output failed — fallback to raw LLM text
-                print("[DRIFT] Structured output failed, falling back:", e)
-                raw = llm.invoke(drift_prompt) if hasattr(llm, "invoke") else None
-                raw_text = raw if isinstance(raw, str) else (raw.content if hasattr(raw, "content") else "")
-                sql_match = re.search(r"SELECT[\s\S]+?;", raw_text, re.IGNORECASE)
-                extracted_sql = sql_match.group(0) if sql_match else "SELECT 1;"
-                drift_result = SQLQuerySpec(
-                    sql_query=extracted_sql,
-                    query_purpose="Auto-generated Drift SQL (fallback)",
-                    expected_columns=[]
-                )
-
-            sql = drift_result.sql_query.strip() if drift_result and hasattr(drift_result, "sql_query") else None
-
-            # Minimal validation: must start with SELECT and include key drift columns
-            issues = []
-            if not sql or not sql.lower().startswith("select"):
-                issues.append("Generated output does not start with SELECT.")
-            required_cols = ["drift_type", "drift_metric", "drift_score", "is_significant", "detected_at"]
-            if sql:
-                missing = [c for c in required_cols if c not in sql.lower()]
-                if missing:
-                    issues.append(f"Missing required drift columns in SQL: {missing}")
-
-            if issues:
-                print("[DRIFT VALIDATION] Issues:", issues)
-                # Don't fail — return the SQL anyway but flag the message
-                messages = [AIMessage(content=f"Generated Drift SQL (validation warnings): {', '.join(issues)}")]
-            else:
-                messages = [AIMessage(content="Generated Drift SQL")]
-
+            drift_sql = get_drift_sql_query(state)
+            
             return {
-                "generated_sql": sql,
-                "sql_purpose": getattr(drift_result, "query_purpose", "drift_query"),
-                "expected_columns": getattr(drift_result, "expected_columns", []),
+                "generated_sql": drift_sql,
+                "sql_purpose": f"Drift detection analysis for {use_case or 'all models'}",
+                "expected_columns": [
+                    "model_name", "drift_type", "drift_score", 
+                    "is_significant", "detected_at"
+                ],
                 "execution_path": execution_path,
-                "messages": messages
+                "messages": [AIMessage(content=f"Generated drift detection SQL query")]
             }
-
-        except Exception as ex:
-            print("[DRIFT] Exception while generating drift SQL:", ex)
-            import traceback
-            traceback.print_exc()
-            return {
-                "generated_sql": None,
-                "sql_purpose": "Failed to generate Drift SQL",
-                "expected_columns": [],
-                "execution_path": execution_path,
-                "messages": [AIMessage(content=f"Failed to generate Drift SQL: {str(ex)}")]
-            }
-
+        except Exception as e:
+            print(f"[SQL] Drift SQL generation failed: {e}")
 
 
 
