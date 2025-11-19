@@ -82,8 +82,9 @@ class AnalysisAggregator:
         # Route to appropriate aggregator
         if comparison_type == "performance":
             return self._analyze_model_performance()
+        # Around line 60-70 in analyze() method
         elif comparison_type == "drift":
-            return self._analyze_drift()
+            return self._analyze_drift_enhanced()  # Use enhanced version
         elif comparison_type == "ensemble_vs_base":
             return self._analyze_ensemble_vs_base()
         elif comparison_type == "feature_importance":
@@ -583,47 +584,78 @@ class AnalysisAggregator:
         
         return raw
 
-    # -------------------------
-    # DRIFT ANALYSIS
-    # -------------------------
-    def _analyze_drift(self) -> Dict[str, Any]:
+    def _analyze_drift_enhanced(self) -> Dict[str, Any]:
+        """
+        ENHANCED drift analysis with proper data handling
+        """
         drift_summary = {}
-        story_parts = []
+        story_parts = ["DRIFT DETECTION ANALYSIS:"]
         
         # Extract model list
         models_analyzed = []
         if "model_name" in self.df.columns:
             models_analyzed = sorted(self.df["model_name"].unique().tolist())
+            print(f"[Drift Analysis] Found {len(models_analyzed)} models")
         
-        if "model_name" in self.df.columns and "drift_detected" in self.df.columns:
-            for model in self.df["model_name"].unique():
-                model_df = self.df[self.df["model_name"] == model]
-                drift_count = model_df["drift_detected"].sum()
-                total_checks = len(model_df)
-                drift_rate = (drift_count / total_checks * 100) if total_checks > 0 else 0
-                
-                avg_drift_score = model_df["drift_score"].mean() if "drift_score" in model_df.columns else 0
-                
-                drift_summary[model] = {
-                    "drift_detected": drift_count > 0,
-                    "drift_count": int(drift_count),
-                    "total_checks": int(total_checks),
-                    "drift_rate_pct": float(drift_rate),
-                    "avg_drift_score": float(avg_drift_score)
-                }
-                
-                if drift_count > 0:
-                    story_parts.append(f"MODEL_DRIFT: {model} shows drift in {drift_count}/{total_checks} checks ({drift_rate:.1f}%)")
-                    if drift_rate > 50:
-                        story_parts.append(f"  - SEVERITY: HIGH - Frequent drift detected, retraining recommended")
-                    elif drift_rate > 20:
-                        story_parts.append(f"  - SEVERITY: MODERATE - Monitor closely")
-                    else:
-                        story_parts.append(f"  - SEVERITY: LOW - Acceptable drift levels")
+        # Check what columns we have
+        required_cols = ['model_name', 'drift_type', 'drift_score', 'is_significant']
+        missing_cols = [col for col in required_cols if col not in self.df.columns]
         
-        story = "\n".join(story_parts) if story_parts else "No significant drift detected across models"
+        if missing_cols:
+            print(f"[Drift Analysis] Missing columns: {missing_cols}")
+            print(f"[Drift Analysis] Available columns: {list(self.df.columns)}")
+            
+            # Try to adapt to available data
+            return self._analyze_drift_fallback()
         
-        computed_values = {"drift_summary": drift_summary, "timestamp": datetime.utcnow().isoformat()}
+        # Process drift data
+        for model in models_analyzed:
+            model_df = self.df[self.df["model_name"] == model]
+            
+            # Count drift occurrences
+            total_checks = len(model_df)
+            significant_drifts = model_df["is_significant"].sum()
+            drift_rate = (significant_drifts / total_checks * 100) if total_checks > 0 else 0
+            
+            # Average drift score
+            avg_drift_score = model_df["drift_score"].mean()
+            
+            # Drift types detected
+            drift_types = model_df["drift_type"].unique().tolist()
+            
+            drift_summary[model] = {
+                "drift_detected": significant_drifts > 0,
+                "drift_count": int(significant_drifts),
+                "total_checks": int(total_checks),
+                "drift_rate_pct": float(drift_rate),
+                "avg_drift_score": float(avg_drift_score),
+                "drift_types": drift_types
+            }
+            
+            # Generate story
+            if significant_drifts > 0:
+                severity = "HIGH" if drift_rate > 50 else "MODERATE" if drift_rate > 20 else "LOW"
+                story_parts.append(
+                    f"MODEL_DRIFT: {model} - {significant_drifts}/{total_checks} checks "
+                    f"({drift_rate:.1f}%) - SEVERITY: {severity}"
+                )
+                story_parts.append(f"  - Drift types: {', '.join(drift_types)}")
+                story_parts.append(f"  - Avg drift score: {avg_drift_score:.4f}")
+                
+                if severity == "HIGH":
+                    story_parts.append(f"  - ACTION: Immediate retraining recommended")
+                elif severity == "MODERATE":
+                    story_parts.append(f"  - ACTION: Monitor closely, consider retraining")
+            else:
+                story_parts.append(f"MODEL_STABLE: {model} - No significant drift detected")
+        
+        story = "\n".join(story_parts) if story_parts else "No drift analysis available"
+        
+        computed_values = {
+            "drift_summary": drift_summary,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+        
         flat = self._standardize_placeholders(computed_values)
         merged = {**computed_values, **flat}
         
@@ -632,7 +664,8 @@ class AnalysisAggregator:
                 model: {
                     "drift_count": f"{stats['drift_count']}/{stats['total_checks']}",
                     "drift_rate": f"{stats['drift_rate_pct']:.2f}%",
-                    "avg_score": f"{stats['avg_drift_score']:.6f}"
+                    "avg_score": f"{stats['avg_drift_score']:.6f}",
+                    "types": ", ".join(stats['drift_types'])
                 }
                 for model, stats in drift_summary.items()
             }
@@ -644,9 +677,41 @@ class AnalysisAggregator:
             "story_elements": {"drift_summary": drift_summary},
             "computed_values": merged,
             "raw_metrics": raw_metrics,
-            "models_analyzed": models_analyzed  # ← Add this
+            "models_analyzed": models_analyzed
         }
 
+    def _analyze_drift_fallback(self) -> Dict[str, Any]:
+        """
+        Fallback for drift analysis when expected columns missing
+        """
+        print("[Drift Fallback] Attempting alternate analysis...")
+        
+        # Try to extract any useful info from available columns
+        summary = {
+            "total_rows": len(self.df),
+            "columns": list(self.df.columns),
+            "message": "Drift data structure different than expected"
+        }
+        
+        models_analyzed = []
+        if "model_name" in self.df.columns:
+            models_analyzed = sorted(self.df["model_name"].unique().tolist())
+        
+        story = (
+            f"DRIFT ANALYSIS: Retrieved {len(self.df)} drift records\n"
+            f"Models found: {len(models_analyzed)}\n"
+            f"Available data columns: {', '.join(self.df.columns[:10])}\n"
+            f"Note: Standard drift columns missing, showing available data"
+        )
+        
+        return {
+            "analysis_type": "drift_analysis",
+            "story": story,
+            "story_elements": {"summary": summary},
+            "computed_values": {"summary": summary},
+            "raw_metrics": {"data": self.df.head(10).to_dict('records')},
+            "models_analyzed": models_analyzed
+        }
     # -------------------------
     # ENSEMBLE VS BASE
     # -------------------------
