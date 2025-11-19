@@ -223,7 +223,7 @@ def query_simplification_agent(state: AgentState) -> AgentState:
                 schema_file_content = f.read()
             
             # Limit to avoid token limits (adjust as needed)
-            schema_context = schema_file_content[:10000]
+            schema_context = schema_file_content[:15000]
             
             print(f"✓ Loaded schema ({len(schema_context)} chars)")
             
@@ -237,14 +237,6 @@ def query_simplification_agent(state: AgentState) -> AgentState:
         - drift_results: drift_id, model_id, drift_score, drift_type
         """
 
-    
-    # Initialize LLM
-    llm = ChatOpenAI(
-        model='gpt-4.1-nano',
-        api_key=os.getenv("gpt_api_key"),
-        stream_usage=True,
-        temperature=0.7
-    )
     
     # Simplification prompt
     simplification_prompt = f"""You are a query simplification expert for a pharmaceutical ML analytics database.
@@ -297,9 +289,12 @@ Simplify the query to be SHORT, PRECISE, and TO THE POINT. Focus on:
         simplified_query = user_query  
     
     return {
+        'user_query': user_query,  # ← CRITICAL: Keep original query
         'simplified_query': simplified_query,
-        'execution_path': execution_path
+        'execution_path': execution_path,
+        'messages': []  # Initialize empty messages list for downstream nodes
     }
+
 
 
 
@@ -308,7 +303,7 @@ def query_understanding_agent(state: AgentState) -> dict:
     """
     FIXED VERSION - Better intent classification for "tell me about" queries
     """
-    query = state.get('simplified_query', state['user_query'])
+    query = state.get('simplified_query') or state.get('user_query', '')
     messages = state.get('messages', [])
     conversation_context = state.get('conversation_context', {})
     mentioned_models = state.get('mentioned_models', [])
@@ -682,7 +677,7 @@ def sql_generation_agent(state: AgentState) -> dict:
     metrics_requested = state.get('metrics_requested', [])
     time_range = state.get('time_range')
     context_docs = state.get('context_documents', [])
-    user_query = state.get('simplified_query', state['user_query'])
+    user_query = state.get('simplified_query') or state.get('user_query', '')
     
     
 

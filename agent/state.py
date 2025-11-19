@@ -25,6 +25,16 @@ def max_value(left: Optional[int], right: Optional[int]) -> Optional[int]:
         return left
     return max(left, right)
 
+# In agent/state.py
+
+def safe_add_lists(left: Optional[List], right: Optional[List]) -> List:
+    """Safely add two lists, treating None as empty list"""
+    if left is None:
+        left = []
+    if right is None:
+        right = []
+    return left + right
+
 class AgentState(TypedDict):
     messages: Annotated[list[BaseMessage], add_messages]
     user_query: str
@@ -45,7 +55,6 @@ class AgentState(TypedDict):
     sql_purpose: Optional[str]
     expected_columns: Optional[List[str]]
     
-    # SQL Retry Logic (EXISTING FEATURE - KEEP THIS)
     sql_retry_count: Annotated[int, max_value]  
     needs_sql_retry: bool  
     sql_error_feedback: Optional[str]
@@ -56,7 +65,7 @@ class AgentState(TypedDict):
     analysis_results: Optional[Dict[str, Any]]
     
     visualization_specs: Optional[List[Dict[str, Any]]]
-    rendered_charts: Annotated[Optional[List[Dict[str, Any]]], add]
+    rendered_charts: Annotated[Optional[List[Dict[str, Any]]], safe_add_lists]  # ← CHANGED
     viz_strategy: Optional[str]
     viz_reasoning: Optional[str]
     viz_warnings: Optional[List[str]]
@@ -67,7 +76,7 @@ class AgentState(TypedDict):
     clarification_question: Optional[str]
     loop_count: Annotated[int, max_value] 
     next_action: Optional[str]
-    execution_path: Annotated[List[str], add] 
+    execution_path: Annotated[List[str], safe_add_lists]  # ← CHANGED
     
     conversation_context: Optional[Dict[str, Any]]
     mentioned_models: Annotated[Optional[List[str]], merge_lists]
@@ -76,9 +85,7 @@ class AgentState(TypedDict):
     current_topic: Optional[str]
     clarification_attempts: Annotated[int, max_value] 
     
-    # Personalized Business Context
     personalized_business_context: Optional[str]
-    # User identification
     user_id: Optional[str]
     
     session_id: str

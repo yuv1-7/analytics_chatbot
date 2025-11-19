@@ -217,7 +217,6 @@ builder.add_node('visualization_spec', visualization_specification_agent)
 builder.add_node('visualization_rendering', visualization_rendering_agent)
 builder.add_node('insight_generation', insight_generation_agent)
 
-builder.add_edge(START, 'query_understanding')
 builder.add_edge('query_understanding', 'orchestrator')
 
 builder.add_conditional_edges(
