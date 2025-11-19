@@ -40,6 +40,7 @@ class ConversationMemoryManager:
         session_id: str,
         turn_number: int,
         user_query: str,
+        simplified_query: str,
         insight_text: str
     ) -> bool:
         """
@@ -96,8 +97,9 @@ class ConversationMemoryManager:
                     "timestamp": timestamp,
                     
                     # Content
-                    "user_query": user_query[:500],  # Truncate if too long
-                    "insight_chunk": chunk_text[:40000],  # Pinecone 40KB limit
+                    "user_query": user_query[:500],
+                    "simplified_query": simplified_query[:500],  
+                    "insight_chunk": chunk_text[:40000],  
                     "chunk_length": len(chunk_text)
                 }
                 
@@ -183,6 +185,7 @@ class ConversationMemoryManager:
                     'chunk_index': metadata['chunk_index'],
                     'total_chunks': metadata['total_chunks'],
                     'user_query': metadata['user_query'],
+                    'simplified_query': metadata.get('simplified_query', ''),
                     'insight_chunk': metadata['insight_chunk'],
                     'relevance': match['score'],
                     'timestamp': metadata.get('timestamp', ''),
@@ -307,6 +310,7 @@ class ConversationMemoryManager:
                 'success': True,
                 'turn': turn_number,
                 'user_query': first_chunk['user_query'],
+                'simplified_query': first_chunk.get('simplified_query', ''),
                 'full_insight': full_insight,
                 'timestamp': first_chunk['timestamp'],
                 'total_chunks': len(chunks)
@@ -352,6 +356,7 @@ class ConversationMemoryManager:
                     'chunk_index': metadata['chunk_index'],
                     'total_chunks': metadata['total_chunks'],
                     'user_query': metadata['user_query'],
+                    'simplified_query': metadata.get('simplified_query', ''),
                     'insight_chunk': metadata['insight_chunk'],
                     'relevance': match['score'],
                     'timestamp': metadata.get('timestamp', ''),

@@ -2,6 +2,7 @@ from langgraph.graph import StateGraph, START, END
 from langgraph.prebuilt import ToolNode
 from agent.state import AgentState
 from agent.nodes import (
+    query_simplification_agent,
     query_understanding_agent,
     orchestrator_agent,
     context_retrieval_agent,
@@ -202,7 +203,10 @@ tool_node = ToolNode(ALL_TOOLS)
 
 builder = StateGraph(AgentState)
 
-builder.add_node('query_understanding', query_understanding_agent)
+builder.add_node('query_simplification',query_simplification_agent)
+builder.add_node('query_understanding',query_understanding_agent)
+builder.add_edge(START, 'query_simplification')
+builder.add_edge('query_simplification', 'query_understanding')
 builder.add_node('orchestrator', orchestrator_agent)
 builder.add_node('context_retrieval', context_retrieval_agent)
 builder.add_node('sql_generation', sql_generation_agent)
@@ -213,7 +217,6 @@ builder.add_node('visualization_spec', visualization_specification_agent)
 builder.add_node('visualization_rendering', visualization_rendering_agent)
 builder.add_node('insight_generation', insight_generation_agent)
 
-builder.add_edge(START, 'query_understanding')
 builder.add_edge('query_understanding', 'orchestrator')
 
 builder.add_conditional_edges(
