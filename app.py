@@ -494,6 +494,10 @@ def process_query(user_input):
         if final_state:
             st.session_state.conversation_state.update(final_state)
             final_insights = extract_final_insights(final_state, all_messages)
+
+            simplified_query = final_state.get('simplified_query', user_input)
+            print(f"\n[Process Query] Original: {user_input}")
+            print(f"[Process Query] Simplified: {simplified_query}\n")
             
             rendered_charts = final_state.get('rendered_charts')
             if rendered_charts is None:
@@ -512,7 +516,8 @@ def process_query(user_input):
                 'tool_results': format_tool_results(all_messages),
                 'viz_strategy': viz_strategy,
                 'viz_reasoning': viz_reasoning,
-                'viz_warnings': viz_warnings
+                'viz_warnings': viz_warnings,
+                'simplified_query': simplified_query
             }
 
             if final_state.get('needs_clarification'):
@@ -521,9 +526,26 @@ def process_query(user_input):
                     'Could you please provide more details?'
                 )
 
+            try:
+                from core.memory_manager import get_memory_manager
+                memory_manager = get_memory_manager()
+                
+                memory_manager.store_insight(
+                    session_id=st.session_state.session_id,
+                    turn_number=st.session_state.turn_number,
+                    user_query=user_input,  # Original query
+                    simplified_query=simplified_query,  # Simplified query
+                    insight_text=final_insights
+                )
+                print(f"✓ Stored turn {st.session_state.turn_number} in memory with both queries")
+            except Exception as mem_error:
+                print(f"⚠ Warning: Failed to store in memory: {mem_error}")
+
+
             log_entry = {
                 'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 'query': user_input,
+                'simplified_query': simplified_query,
                 'response': assistant_response['content'],
                 'status': 'success',
                 'error_type': None,
@@ -546,6 +568,7 @@ def process_query(user_input):
         log_entry = {
             'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             'query': user_input,
+            'simplified_query': None,
             'response': None,
             'status': 'error',
             'error_type': str(type(e).__name__),

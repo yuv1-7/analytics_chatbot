@@ -2,6 +2,7 @@ from typing import Annotated, List, Dict, Any, Optional
 from typing_extensions import TypedDict
 from langgraph.graph.message import add_messages
 from langchain_core.messages import BaseMessage
+from operator import add 
 
 def merge_lists(left: Optional[List], right: Optional[List]) -> Optional[List]:
     if right is None:
@@ -16,9 +17,18 @@ def merge_lists(left: Optional[List], right: Optional[List]) -> Optional[List]:
             seen.add(item)
     return result
 
+def max_value(left: Optional[int], right: Optional[int]) -> Optional[int]:
+    """Keep the maximum value for counter fields"""
+    if left is None:
+        return right
+    if right is None:
+        return left
+    return max(left, right)
+
 class AgentState(TypedDict):
     messages: Annotated[list[BaseMessage], add_messages]
     user_query: str
+    simplified_query: Optional[str]
     
     parsed_intent: Optional[Dict[str, Any]]
     use_case: Optional[str]
@@ -36,7 +46,7 @@ class AgentState(TypedDict):
     expected_columns: Optional[List[str]]
     
     # SQL Retry Logic (EXISTING FEATURE - KEEP THIS)
-    sql_retry_count: int  
+    sql_retry_count: Annotated[int, max_value]  
     needs_sql_retry: bool  
     sql_error_feedback: Optional[str]
     
@@ -46,7 +56,7 @@ class AgentState(TypedDict):
     analysis_results: Optional[Dict[str, Any]]
     
     visualization_specs: Optional[List[Dict[str, Any]]]
-    rendered_charts: Optional[List[Dict[str, Any]]]
+    rendered_charts: Annotated[Optional[List[Dict[str, Any]]], add]
     viz_strategy: Optional[str]
     viz_reasoning: Optional[str]
     viz_warnings: Optional[List[str]]
@@ -55,16 +65,16 @@ class AgentState(TypedDict):
     
     needs_clarification: bool
     clarification_question: Optional[str]
-    loop_count: int
+    loop_count: Annotated[int, max_value] 
     next_action: Optional[str]
-    execution_path: List[str]
+    execution_path: Annotated[List[str], add] 
     
     conversation_context: Optional[Dict[str, Any]]
     mentioned_models: Annotated[Optional[List[str]], merge_lists]
     mentioned_model_ids: Annotated[Optional[List[str]], merge_lists]
     last_query_summary: Optional[str]
     current_topic: Optional[str]
-    clarification_attempts: int
+    clarification_attempts: Annotated[int, max_value] 
     
     # Personalized Business Context
     personalized_business_context: Optional[str]
@@ -72,7 +82,7 @@ class AgentState(TypedDict):
     user_id: Optional[str]
     
     session_id: str
-    turn_number: int
+    turn_number: Annotated[int, max_value] 
     needs_memory: bool
     needs_database: bool
     conversation_summaries: Optional[List[Dict]]

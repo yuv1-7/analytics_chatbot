@@ -20,10 +20,6 @@ from agent.drift_query_helper import (
     get_drift_sql_query
 )
 
-
-
-
-
 llm = ChatOpenAI(
     model='gpt-4.1-nano',
     api_key=os.getenv("gpt_api_key"),
@@ -197,11 +193,122 @@ def detect_turn_reference(query: str) -> tuple[bool, Optional[int]]:
     return False, None
 
 
+
+def query_simplification_agent(state: AgentState) -> AgentState:
+    """
+    Simplifies user queries using database schema context.
+    Passes both original and simplified queries forward.
+    """
+    from langchain_google_genai import ChatGoogleGenerativeAI
+    import os
+    
+    user_query = state['user_query']
+    
+    # Track execution
+    execution_path = state.get('execution_path', [])
+    execution_path.append('query_simplification')
+    
+    # Get database schema context
+    try:
+            # Get path to schema_context.py
+            schema_file_path = os.path.join(
+                os.path.dirname(__file__),
+                '..',
+                'core',
+                'schema_context.py'
+            )
+            
+            # Read file content
+            with open(schema_file_path, 'r', encoding='utf-8') as f:
+                schema_file_content = f.read()
+            
+            # Limit to avoid token limits (adjust as needed)
+            schema_context = schema_file_content[:10000]
+            
+            print(f"✓ Loaded schema ({len(schema_context)} chars)")
+            
+    except Exception as e:
+        print(f"⚠ Warning: Could not load schema: {e}")
+        schema_context = """
+        **Database Schema:**
+        - models: model_id, model_name, algorithm, use_case, trained_date
+        - executions: execution_id, model_id, execution_date, status
+        - metrics: metric_id, execution_id, metric_name, metric_value
+        - drift_results: drift_id, model_id, drift_score, drift_type
+        """
+
+    
+    # Initialize LLM
+    llm = ChatOpenAI(
+        model='gpt-4.1-nano',
+        api_key=os.getenv("gpt_api_key"),
+        stream_usage=True,
+        temperature=0.7
+    )
+    
+    # Simplification prompt
+    simplification_prompt = f"""You are a query simplification expert for a pharmaceutical ML analytics database.
+
+**Database Schema:**
+{schema_context}
+
+**User Query:**
+{user_query}
+
+**Your Task:**
+Simplify the query to be SHORT, PRECISE, and TO THE POINT. Focus on:
+
+1. **Expand abbreviations** (e.g., "RMSE" stays "RMSE", "R²" stays "R²", "RF" → "Random Forest")
+2. **Remove filler words** (e.g., "Can you please", "I want to", "Show me")
+3. **Keep it concise** - DO NOT add explanations or extra details
+4. **Standardize names** to match schema (e.g., "random forest" → "Random Forest")
+
+**Rules:**
+- Keep the query SHORT (max 20 words if possible)
+- Remove redundant phrases
+- Keep all essential filters, metrics, and entities
+- Do NOT expand into explanations or specifications
+- Output ONLY the simplified query
+
+**Examples:**
+- Original: "Can you please show me the RMSE values for all RF models trained in Q3?"
+  Simplified: "RMSE for Random Forest models in Q3"
+
+- Original: "Compare the top 5 models from last quarter across all use cases"
+  Simplified: "Top 5 models last quarter, all use cases, RMSE R² execution count"
+
+- Original: "What's the average accuracy of my ML models?"
+  Simplified: "Average accuracy all models"
+
+**Simplified Query:**"""
+
+    try:
+        response = llm.invoke(simplification_prompt)
+        simplified_query = response.content.strip()
+        
+        print(f"\n{'='*60}")
+        print(f"[Query Simplification Node]")
+        print(f"Original: {user_query}")
+        print(f"Simplified: {simplified_query}")
+        print(f"{'='*60}\n")
+        
+    except Exception as e:
+        print(f"Error in query simplification: {e}")
+        simplified_query = user_query  
+    
+    return {
+        'simplified_query': simplified_query,
+        'execution_path': execution_path
+    }
+
+
+
+
 def query_understanding_agent(state: AgentState) -> dict:
     """
     FIXED VERSION - Better intent classification for "tell me about" queries
     """
-    query = state['user_query']
+    query = state.get('simplified_query', state['user_query'])
     messages = state.get('messages', [])
     conversation_context = state.get('conversation_context', {})
     mentioned_models = state.get('mentioned_models', [])
@@ -575,7 +682,8 @@ def sql_generation_agent(state: AgentState) -> dict:
     metrics_requested = state.get('metrics_requested', [])
     time_range = state.get('time_range')
     context_docs = state.get('context_documents', [])
-    user_query = state.get('user_query', '')
+    user_query = state.get('simplified_query', state['user_query'])
+    
     
 
     if should_use_drift_sql(state):
