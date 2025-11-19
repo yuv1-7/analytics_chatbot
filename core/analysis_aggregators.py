@@ -326,6 +326,7 @@ class AnalysisAggregator:
         return metrics_summary
 
 
+
     def _compute_metrics_wide_format(self) -> Dict[str, Any]:
         """
         ENHANCED VERSION - Handle WIDE format: [model_name, avg_test_rmse, avg_test_r2, ...]
