@@ -19,6 +19,7 @@ from enum import Enum
 
 class RouteDecision(Enum):
     END = 'end'
+    QUERY_UNDERSTANDING = 'query_understanding'  # NEW: Route to understanding
     CONTEXT_RETRIEVAL = 'context_retrieval'
     SQL_GENERATION = 'sql_generation'
     DATA_RETRIEVAL = 'data_retrieval'
@@ -29,13 +30,28 @@ class RouteDecision(Enum):
     INSIGHTS = 'insight_generation'
 
 
+# NEW: Route after query simplification
+def route_after_simplification(state: AgentState) -> str:
+    """
+    Route after query simplification based on whether query is conversational
+    """
+    is_conversational = state.get('is_conversational', False)
+    
+    if is_conversational:
+        print("[Route] Conversational query detected, ending workflow")
+        return RouteDecision.END.value
+    else:
+        print("[Route] Analytics query, proceeding to query understanding")
+        return RouteDecision.QUERY_UNDERSTANDING.value
+
+
 def route_after_orchestrator(state: AgentState) -> str:
     next_action = state.get('next_action')
     
     route_map = {
         'ask_clarification': RouteDecision.END,
-        'retrieve_memory': RouteDecision.CONTEXT_RETRIEVAL,  # Changed from 'retrieve_data'
-        'skip_to_sql': RouteDecision.SQL_GENERATION,  # NEW: Skip directly to SQL
+        'retrieve_memory': RouteDecision.CONTEXT_RETRIEVAL,
+        'skip_to_sql': RouteDecision.SQL_GENERATION,
         'end': RouteDecision.END
     }
     
@@ -47,17 +63,14 @@ def route_after_orchestrator(state: AgentState) -> str:
     
     return route.value
 
+
 def route_after_context_retrieval(state: AgentState) -> str:
-    """
-    Route after context retrieval based on needs_database flag
-    """
+    """Route after context retrieval based on needs_database flag"""
     needs_database = state.get('needs_database', True)
     
     if needs_database:
-        # Normal flow: context → SQL → data → analysis → viz → insights
         return RouteDecision.SQL_GENERATION.value
     else:
-        # Memory-only query: context → insights (skip SQL)
         print("Memory-only query detected, skipping SQL generation")
         return RouteDecision.INSIGHTS.value
 
@@ -73,19 +86,12 @@ def route_after_sql_generation(state: AgentState) -> str:
 
 
 def route_after_data_retrieval(state: AgentState) -> str:
-    """
-    Route after data retrieval to either:
-    - sql_generation (if retry needed)
-    - tools (if tool calls present)
-    - analysis (if data retrieved successfully)
-    """
-
+    """Route after data retrieval to either retry, tools, or analysis"""
     needs_retry = state.get('needs_sql_retry', False)
     
     if needs_retry:
         return RouteDecision.SQL_GENERATION.value
     
-
     messages = state.get('messages', [])
     
     if not messages:
@@ -104,17 +110,9 @@ def route_after_tools(state: AgentState) -> str:
     """Route after tools execute to analysis"""
     return RouteDecision.ANALYSIS.value
 
+
 def route_after_analysis(state: AgentState) -> str:
-    """
-    FIXED: Better detection of visualizable data for wide-format results
-    
-    Wide format data (model_name, avg_test_rmse, avg_test_r2, ...) 
-    can be visualized even with just 2-3 models.
-    
-    Key improvements:
-    - Multiple rows with ANY numeric column is visualizable (e.g., 7 models with execution_count)
-    - Single row with 2+ numeric columns is visualizable (metric comparison)
-    """
+    """Route after analysis based on whether data is visualizable"""
     analysis_results = state.get('analysis_results', {})
     raw_data = analysis_results.get('raw_data', [])
     
@@ -124,14 +122,12 @@ def route_after_analysis(state: AgentState) -> str:
         if result.get('success') and result.get('data'):
             data = result['data']
             
-            # Check if we have rows
             if not data or len(data) == 0:
                 continue
             
-            # Check if data has numeric columns (metrics)
             first_row = data[0]
             
-            # Count numeric columns (excluding ID/name columns)
+            # Count numeric columns
             numeric_cols = 0
             non_metric_cols = ['model_id', 'execution_id', 'model_name', 
                               'algorithm', 'use_case', 'version', 'trained_date',
@@ -139,24 +135,14 @@ def route_after_analysis(state: AgentState) -> str:
             
             for key, value in first_row.items():
                 if key.lower() not in non_metric_cols:
-                    # Check if it's a numeric value
                     try:
                         if isinstance(value, (int, float)) and value is not None:
                             numeric_cols += 1
                         elif isinstance(value, str):
-                            # Try to convert to float
                             float(value)
                             numeric_cols += 1
                     except (ValueError, TypeError):
                         continue
-            
-            # ✅ IMPROVED DECISION LOGIC:
-            # Case 1: Multiple rows (models) with at least 1 numeric column
-            #         → Visualizable (e.g., 7 models with execution_count)
-            # Case 2: Single row with 2+ numeric columns
-            #         → Visualizable (metric comparison chart)
-            # Case 3: Check if we have at least 2 data points to compare
-            #         → Either 2+ rows OR 2+ metrics
             
             is_multi_row_with_metrics = len(data) >= 2 and numeric_cols >= 1
             is_single_row_multi_metrics = len(data) == 1 and numeric_cols >= 2
@@ -164,12 +150,9 @@ def route_after_analysis(state: AgentState) -> str:
             if is_multi_row_with_metrics or is_single_row_multi_metrics:
                 has_visualizable_data = True
                 print(f"[Route] ✓ Visualizable: {len(data)} rows, {numeric_cols} metrics")
-                print(f"[Route]   - Multi-row with metrics: {is_multi_row_with_metrics}")
-                print(f"[Route]   - Single-row multi-metrics: {is_single_row_multi_metrics}")
                 break
             else:
                 print(f"[Route] Not visualizable: {len(data)} rows, {numeric_cols} metrics")
-                print(f"[Route]   - Need: (2+ rows + 1+ metrics) OR (1 row + 2+ metrics)")
     
     if has_visualizable_data:
         print(f"[Route] Routing to visualization_spec")
@@ -177,6 +160,7 @@ def route_after_analysis(state: AgentState) -> str:
     
     print(f"[Route] No visualizable data, routing to insights")
     return RouteDecision.INSIGHTS.value
+
 
 def route_after_viz_spec(state: AgentState) -> str:
     """Route after visualization spec to rendering or insights"""
@@ -199,14 +183,15 @@ def route_after_insights(state: AgentState) -> str:
     return RouteDecision.END.value
 
 
+# Create tool node
 tool_node = ToolNode(ALL_TOOLS)
 
+# Build graph
 builder = StateGraph(AgentState)
 
-builder.add_node('query_simplification',query_simplification_agent)
-builder.add_node('query_understanding',query_understanding_agent)
-builder.add_edge(START, 'query_simplification')
-builder.add_edge('query_simplification', 'query_understanding')
+# Add all nodes
+builder.add_node('query_simplification', query_simplification_agent)
+builder.add_node('query_understanding', query_understanding_agent)
 builder.add_node('orchestrator', orchestrator_agent)
 builder.add_node('context_retrieval', context_retrieval_agent)
 builder.add_node('sql_generation', sql_generation_agent)
@@ -217,6 +202,20 @@ builder.add_node('visualization_spec', visualization_specification_agent)
 builder.add_node('visualization_rendering', visualization_rendering_agent)
 builder.add_node('insight_generation', insight_generation_agent)
 
+# Start with query simplification
+builder.add_edge(START, 'query_simplification')
+
+# NEW: Conditional edge after simplification
+builder.add_conditional_edges(
+    'query_simplification',
+    route_after_simplification,
+    {
+        RouteDecision.QUERY_UNDERSTANDING.value: 'query_understanding',
+        RouteDecision.END.value: END  # Exit early for conversational queries
+    }
+)
+
+# Continue with normal flow
 builder.add_edge('query_understanding', 'orchestrator')
 
 builder.add_conditional_edges(
@@ -224,7 +223,7 @@ builder.add_conditional_edges(
     route_after_orchestrator,
     {
         RouteDecision.CONTEXT_RETRIEVAL.value: 'context_retrieval',
-        RouteDecision.SQL_GENERATION.value: 'sql_generation',  # NEW: Direct to SQL
+        RouteDecision.SQL_GENERATION.value: 'sql_generation',
         RouteDecision.END.value: END
     }
 )
@@ -234,7 +233,7 @@ builder.add_conditional_edges(
     route_after_context_retrieval,
     {
         RouteDecision.SQL_GENERATION.value: 'sql_generation',
-        RouteDecision.INSIGHTS.value: 'insight_generation'  # NEW: Skip to insights for memory-only
+        RouteDecision.INSIGHTS.value: 'insight_generation'
     }
 )
 
@@ -299,4 +298,5 @@ builder.add_conditional_edges(
     }
 )
 
+# Compile graph
 graph = builder.compile()

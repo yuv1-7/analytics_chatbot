@@ -39,6 +39,7 @@ class AgentState(TypedDict):
     messages: Annotated[list[BaseMessage], add_messages]
     user_query: str
     simplified_query: Optional[str]
+    is_conversational: bool
     
     parsed_intent: Optional[Dict[str, Any]]
     use_case: Optional[str]

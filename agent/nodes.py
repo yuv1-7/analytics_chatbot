@@ -192,12 +192,10 @@ def detect_turn_reference(query: str) -> tuple[bool, Optional[int]]:
     
     return False, None
 
-
-
 def query_simplification_agent(state: AgentState) -> AgentState:
     """
     Simplifies user queries using database schema context.
-    Passes both original and simplified queries forward.
+    Also detects purely conversational queries and marks them.
     """
     from langchain_google_genai import ChatGoogleGenerativeAI
     import os
@@ -210,23 +208,19 @@ def query_simplification_agent(state: AgentState) -> AgentState:
     
     # Get database schema context
     try:
-            # Get path to schema_context.py
-            schema_file_path = os.path.join(
-                os.path.dirname(__file__),
-                '..',
-                'core',
-                'schema_context.py'
-            )
-            
-            # Read file content
-            with open(schema_file_path, 'r', encoding='utf-8') as f:
-                schema_file_content = f.read()
-            
-            # Limit to avoid token limits (adjust as needed)
-            schema_context = schema_file_content[:15000]
-            
-            print(f"✓ Loaded schema ({len(schema_context)} chars)")
-            
+        schema_file_path = os.path.join(
+            os.path.dirname(__file__),
+            '..',
+            'core',
+            'schema_context.py'
+        )
+        
+        with open(schema_file_path, 'r', encoding='utf-8') as f:
+            schema_file_content = f.read()
+        
+        schema_context = schema_file_content[:15000]
+        print(f"✓ Loaded schema ({len(schema_context)} chars)")
+        
     except Exception as e:
         print(f"⚠ Warning: Could not load schema: {e}")
         schema_context = """
@@ -236,9 +230,8 @@ def query_simplification_agent(state: AgentState) -> AgentState:
         - metrics: metric_id, execution_id, metric_name, metric_value
         - drift_results: drift_id, model_id, drift_score, drift_type
         """
-
     
-    # Simplification prompt
+    # Simplification prompt with conversational detection
     simplification_prompt = f"""You are a query simplification expert for a pharmaceutical ML analytics database.
 
 **Database Schema:**
@@ -248,62 +241,106 @@ def query_simplification_agent(state: AgentState) -> AgentState:
 {user_query}
 
 **Your Task:**
-Simplify the query to be SHORT, PRECISE, and TO THE POINT. Focus on:
+First, determine if this query is relevant to pharmaceutical ML analytics or is purely conversational.
 
-1. **Expand abbreviations** (e.g., "RMSE" stays "RMSE", "R²" stays "R²", "RF" → "Random Forest")
-2. **Remove filler words** (e.g., "Can you please", "I want to", "Show me")
-3. **Keep it concise** - DO NOT add explanations or extra details
-4. **Standardize names** to match schema (e.g., "random forest" → "Random Forest")
+**CONVERSATIONAL (Irrelevant) Queries:**
+- Greetings: "hi", "hello", "hey", "good morning"
+- General chitchat: "how are you", "what's up", "nice to meet you"
+- Unrelated topics: "what's the weather", "tell me a joke", "who won the game"
+- Small talk: "thanks", "goodbye", "see you later"
 
-**Rules:**
-- Keep the query SHORT (max 20 words if possible)
-- Remove redundant phrases
-- Keep all essential filters, metrics, and entities
-- Do NOT expand into explanations or specifications
-- Output ONLY the simplified query
+**RELEVANT Queries:**
+- Anything about models, predictions, metrics, performance, drift
+- Questions about data, HCPs, territories, campaigns
+- Comparisons, analysis requests, insights
+- Follow-up questions referencing previous results ("compare these", "show me those models")
+
+**Output Rules:**
+1. If the query is purely conversational/irrelevant: Output ONLY the word "conversational" (nothing else)
+2. If the query is relevant to analytics: Simplify it following these rules:
+   - Expand abbreviations (e.g., "RF" → "Random Forest")
+   - Remove filler words (e.g., "Can you please", "I want to")
+   - Keep it concise (max 20 words if possible)
+   - Standardize names to match schema
+   - Keep all essential filters, metrics, and entities
+   - Output ONLY the simplified query
 
 **Examples:**
+- Original: "hi how are you"
+  Output: conversational
+
 - Original: "Can you please show me the RMSE values for all RF models trained in Q3?"
-  Simplified: "RMSE for Random Forest models in Q3"
+  Output: RMSE for Random Forest models in Q3
 
-- Original: "Compare the top 5 models from last quarter across all use cases"
-  Simplified: "Top 5 models last quarter, all use cases, RMSE R² execution count"
+- Original: "Compare the top 5 models from last quarter"
+  Output: Top 5 models last quarter, all use cases, RMSE R² execution count
 
-- Original: "What's the average accuracy of my ML models?"
-  Simplified: "Average accuracy all models"
-- If the user query is purely conversational (like just hi, hello) and cannot be something that require context from previos conversations like compare these, etc or somethign completely unrelated to a pharma analytics chatbot. Output only "conversational" exactly. Nothing else
+- Original: "thanks for your help!"
+  Output: conversational
+
+- Original: "what's the weather like today?"
+  Output: conversational
+
+Now process the user query above.
 """
+    
     response = llm.invoke(simplification_prompt)
     simplified_query = response.content.strip()
-    if simplified_query=="conversational":
-        conversational_llm = ChatOpenAI(model='gpt-4.1-nano', api_key=os.getenv("gpt_api_key"),stream_usage=True,temperature=0.7)
-        prompt="""You are a conversational bot that is responsible to answer unrelated queries in short for a pharma analytics system.
-                    Answer the query:{user_query} in that context in extremely short."""
-        conversation_response=conversational_llm.invoke(prompt)
-        return {
-            'user_query': user_query,  # ← CRITICAL: Keep original query
-            'simplified_query': simplified_query,
-            'execution_path': execution_path,
-            'messages': []  # Initialize empty messages list for downstream nodes
-        }
+    
+    # Check if query is conversational
+    if simplified_query.lower() == "conversational":
+        print(f"\n{'='*60}")
+        print(f"[Query Simplification] Conversational query detected")
+        print(f"Original: {user_query}")
+        print(f"{'='*60}\n")
         
+        # Generate conversational response
+        conversational_llm = ChatOpenAI(
+            model='gpt-4o-mini',
+            api_key=os.getenv("gpt_api_key"),
+            stream_usage=True,
+            temperature=0.7
+        )
+        
+        conversation_prompt = f"""You are a friendly assistant for a pharmaceutical analytics system.
+
+The user said: "{user_query}"
+
+This is conversational/small talk, not an analytics query. Respond briefly and naturally (1-2 sentences max).
+
+Also politly direct them to sk queries related to analytics.
+
+Respond naturally to their message:
+"""
+        
+        conversation_response = conversational_llm.invoke(conversation_prompt)
+        conversational_reply = conversation_response.content.strip()
+        
+        return {
+            'user_query': user_query,
+            'simplified_query': "conversational",
+            'execution_path': execution_path,
+            'messages': [AIMessage(content=conversational_reply)],
+            'is_conversational': True,  # NEW: Flag to indicate conversational query
+            'final_insights': conversational_reply,  # Set insights directly
+            'next_action': 'end'  # Signal to end workflow
+        }
+    
     else:
         print(f"\n{'='*60}")
         print(f"[Query Simplification Node]")
         print(f"Original: {user_query}")
         print(f"Simplified: {simplified_query}")
         print(f"{'='*60}\n")
-
+        
         return {
-            'user_query': user_query,  # ← CRITICAL: Keep original query
+            'user_query': user_query,
             'simplified_query': simplified_query,
             'execution_path': execution_path,
-            'messages': []  # Initialize empty messages list for downstream nodes
+            'messages': [],
+            'is_conversational': False,  # NEW: Flag to indicate analytics query
+            'next_action': None
         }
-
-
-
-
 
 def query_understanding_agent(state: AgentState) -> dict:
     """
