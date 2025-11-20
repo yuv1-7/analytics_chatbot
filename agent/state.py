@@ -25,7 +25,11 @@ def max_value(left: Optional[int], right: Optional[int]) -> Optional[int]:
         return left
     return max(left, right)
 
-# In agent/state.py
+def replace_list(left: Optional[List], right: Optional[List]) -> Optional[List]:
+    """Replace the list with new value (or keep old if new is None)"""
+    if right is not None:
+        return right
+    return left
 
 def safe_add_lists(left: Optional[List], right: Optional[List]) -> List:
     """Safely add two lists, treating None as empty list"""
@@ -66,7 +70,7 @@ class AgentState(TypedDict):
     analysis_results: Optional[Dict[str, Any]]
     
     visualization_specs: Optional[List[Dict[str, Any]]]
-    rendered_charts: Annotated[Optional[List[Dict[str, Any]]], safe_add_lists]  # ← CHANGED
+    rendered_charts: Annotated[Optional[List[Dict[str, Any]]], replace_list]
     viz_strategy: Optional[str]
     viz_reasoning: Optional[str]
     viz_warnings: Optional[List[str]]
