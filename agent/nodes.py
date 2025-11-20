@@ -271,29 +271,35 @@ Simplify the query to be SHORT, PRECISE, and TO THE POINT. Focus on:
 
 - Original: "What's the average accuracy of my ML models?"
   Simplified: "Average accuracy all models"
-
-**Simplified Query:**"""
-
-    try:
-        response = llm.invoke(simplification_prompt)
-        simplified_query = response.content.strip()
+- If the user query is purely conversational (like just hi, hello) and cannot be something that require context from previos conversations like compare these, etc or somethign completely unrelated to a pharma analytics chatbot. Output only "conversational" exactly. Nothing else
+"""
+    response = llm.invoke(simplification_prompt)
+    simplified_query = response.content.strip()
+    if simplified_query=="conversational":
+        conversational_llm = ChatOpenAI(model='gpt-4.1-nano', api_key=os.getenv("gpt_api_key"),stream_usage=True,temperature=0.7)
+        prompt="""You are a conversational bot that is responsible to answer unrelated queries in short for a pharma analytics system.
+                    Answer the query:{user_query} in that context in extremely short."""
+        conversation_response=conversational_llm.invoke(prompt)
+        return {
+            'user_query': user_query,  # ← CRITICAL: Keep original query
+            'simplified_query': simplified_query,
+            'execution_path': execution_path,
+            'messages': []  # Initialize empty messages list for downstream nodes
+        }
         
+    else:
         print(f"\n{'='*60}")
         print(f"[Query Simplification Node]")
         print(f"Original: {user_query}")
         print(f"Simplified: {simplified_query}")
         print(f"{'='*60}\n")
-        
-    except Exception as e:
-        print(f"Error in query simplification: {e}")
-        simplified_query = user_query  
-    
-    return {
-        'user_query': user_query,  # ← CRITICAL: Keep original query
-        'simplified_query': simplified_query,
-        'execution_path': execution_path,
-        'messages': []  # Initialize empty messages list for downstream nodes
-    }
+
+        return {
+            'user_query': user_query,  # ← CRITICAL: Keep original query
+            'simplified_query': simplified_query,
+            'execution_path': execution_path,
+            'messages': []  # Initialize empty messages list for downstream nodes
+        }
 
 
 
