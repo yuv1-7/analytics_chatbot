@@ -21,7 +21,7 @@ from agent.drift_query_helper import (
 )
 
 llm = ChatOpenAI(
-    model='gpt-4.1-nano',
+    model='gpt-4.1-mini',
     api_key=os.getenv("gpt_api_key"),
     stream_usage=True,
     temperature=0.7
