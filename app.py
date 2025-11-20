@@ -530,14 +530,19 @@ def process_query(user_input):
                 from core.memory_manager import get_memory_manager
                 memory_manager = get_memory_manager()
                 
-                memory_manager.store_insight(
-                    session_id=st.session_state.session_id,
-                    turn_number=st.session_state.turn_number,
-                    user_query=user_input,  # Original query
-                    simplified_query=simplified_query,  # Simplified query
-                    insight_text=final_insights
-                )
-                print(f"✓ Stored turn {st.session_state.turn_number} in memory with both queries")
+                is_conversational=final_state.get("is_conversational",False)
+                if not is_conversational:
+                    memory_manager.store_insight(
+                        session_id=st.session_state.session_id,
+                        turn_number=st.session_state.turn_number,
+                        user_query=user_input,  # Original query
+                        simplified_query=simplified_query,  # Simplified query
+                        insight_text=final_insights
+                    )
+                    print(f"✓ Stored turn {st.session_state.turn_number} in memory with both queries")
+                else:
+                    print("skipped memory store")
+            
             except Exception as mem_error:
                 print(f"⚠ Warning: Failed to store in memory: {mem_error}")
 
