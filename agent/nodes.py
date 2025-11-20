@@ -272,6 +272,14 @@ Simplify the query to be SHORT, PRECISE, and TO THE POINT. Focus on:
 - Original: "What's the average accuracy of my ML models?"
   Simplified: "Average accuracy all models"
 
+
+if the user inputs the query that is purely conversational and is in no way related to the schema or has any intent then you must reply it accordingly 
+    some of the example queries by the user are: 
+
+    ('hi','hello','thank you','good evening','good afternoon','good morning','hello how are you')
+make sure that you do this carefully
+
+
 **Simplified Query:**"""
 
     try:
